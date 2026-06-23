@@ -3,6 +3,12 @@
   "name": "X 大白话 · Grok 解读增强",
   "version": "0.2.0",
   "description": "悬停推文/文章自动用大白话解释,炫酷卡片展示。复用 X 自己的 Grok 请求,不碰签名、不存凭证。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://x.com/*",
@@ -13,7 +19,13 @@
   "options_page": "options.html",
   "action": {
     "default_title": "X 大白话 · 设置",
-    "default_popup": "options.html"
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
