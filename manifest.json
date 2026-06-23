@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "X 大白话 · Grok 解读增强",
+  "version": "0.2.0",
+  "description": "悬停推文/文章自动用大白话解释,炫酷卡片展示。复用 X 自己的 Grok 请求,不碰签名、不存凭证。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://*.x.com/*",
+    "https://*.twitter.com/*"
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "X 大白话 · 设置",
+    "default_popup": "options.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["render.js", "cache.js", "cardui.js", "content.js"],
+      "css": ["card.css"],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ]
+}

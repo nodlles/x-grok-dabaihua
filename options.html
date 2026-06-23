@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X 大白话 · 设置</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-width: 420px;
+      max-width: 560px;
+      padding: 20px 22px 28px;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: radial-gradient(1200px 400px at 20% -10%, #241c4d 0%, #0e0c1e 55%);
+      color: #e8e6f5;
+    }
+    h1 {
+      font-size: 18px;
+      margin: 0 0 4px;
+      background: linear-gradient(90deg, #d7c8ff, #8fe9ff);
+      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .sub { color: #9b94b8; font-size: 12px; margin-bottom: 18px; }
+    .card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
+    label { font-size: 13.5px; }
+    .hint { font-size: 11.5px; color: #9b94b8; margin-top: 2px; }
+    select, input[type=range], textarea {
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(124,92,255,0.35);
+      color: #e8e6f5;
+      border-radius: 9px;
+      padding: 7px 9px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; }
+    input[type=range] { width: 200px; }
+    .switch { display:inline-flex; align-items:center; gap:8px; }
+    .val { font-variant-numeric: tabular-nums; color:#8fe9ff; min-width: 52px; text-align:right; }
+    .seg { display:flex; gap:6px; }
+    .seg button {
+      border:1px solid rgba(124,92,255,0.35); background:transparent; color:#cfcae0;
+      padding:6px 12px; border-radius:9px; cursor:pointer; font-size:13px;
+    }
+    .seg button.on { background: rgba(124,92,255,0.28); color:#fff; border-color: rgba(124,92,255,0.7); }
+    .cap {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px; background: rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.08);
+      border-radius: 10px; padding: 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-all;
+      max-height: 220px; overflow:auto;
+    }
+    .cap .u { color:#8fe9ff; } .cap .m { color:#ffd479; }
+    .btns { display:flex; gap:8px; margin-top:6px; }
+    .btns button {
+      border:1px solid rgba(124,92,255,0.4); background:rgba(124,92,255,0.16); color:#d7c8ff;
+      padding:7px 12px; border-radius:9px; cursor:pointer; font-size:12.5px;
+    }
+    .saved { color:#7CFFB2; font-size:12px; margin-left:8px; opacity:0; transition:opacity .2s; }
+    .saved.show { opacity:1; }
+    .empty { color:#9b94b8; font-size:12.5px; }
+  </style>
+</head>
+<body>
+  <h1>✦ X 大白话 · Grok 解读增强</h1>
+  <div class="sub">当前 v0.1 —— 骨架 + 学习模式。先调 UI,再把抓到的 Grok 请求结构接上。</div>
+
+  <div class="card">
+    <div class="row">
+      <div><label>启用插件</label><div class="hint">关掉后悬停不再触发</div></div>
+      <label class="switch"><input type="checkbox" id="enabled" /> 开启</label>
+    </div>
+    <div class="row">
+      <div><label>工作模式</label>
+        <div class="hint">大白话 = 真接 Grok;演示 = 仅看 UI;学习 = 抓请求结构调试</div></div>
+      <div class="seg">
+        <button data-mode="grok" id="m-grok">大白话</button>
+        <button data-mode="demo" id="m-demo">演示</button>
+        <button data-mode="learn" id="m-learn">学习</button>
+      </div>
+    </div>
+    <div class="row">
+      <div><label>卡片主题</label><div class="hint">随时切换,即时生效</div></div>
+      <select id="theme">
+        <option value="graphite">石墨深灰</option>
+        <option value="light">极简浅色</option>
+        <option value="ocean">海洋蓝</option>
+        <option value="neon">霓虹紫</option>
+        <option value="auto">跟随系统</option>
+      </select>
+    </div>
+    <div class="row">
+      <div><label>悬停触发时间</label><div class="hint">鼠标停多久后自动触发</div></div>
+      <div class="switch"><input type="range" id="delay" min="300" max="3000" step="100" />
+        <span class="val" id="delayVal"></span></div>
+    </div>
+    <div class="row">
+      <div><label>后台捕获 Grok 请求</label><div class="hint">仅记录结构,凭证一律打码</div></div>
+      <label class="switch"><input type="checkbox" id="capture" /> 开启</label>
+    </div>
+    <div class="row">
+      <div><label>隐藏 X 自己的 Grok 抽屉</label>
+        <div class="hint">只看我们的炫酷卡片。用「移到屏幕外」实现,不影响取数</div></div>
+      <label class="switch"><input type="checkbox" id="hideDrawer" /> 开启</label>
+    </div>
+    <div style="margin-top:6px">
+      <label style="font-size:12.5px">自定义抽屉选择器(可选)</label>
+      <div class="hint">默认那组猜不中时:右键抽屉→检查,把它的 CSS 选择器填这里</div>
+      <input type="text" id="drawerSelector" placeholder='例如 [data-testid="GrokDrawer"]'
+        style="width:100%;box-sizing:border-box;margin-top:5px;font-family:ui-monospace,monospace;font-size:12px" />
+    </div>
+  </div>
+
+  <div class="card">
+    <label>大白话提示词(prompt)</label>
+    <div class="hint">接入真 Grok 后会用它。可改成「东北话」「带吐槽」等任意风格。</div>
+    <textarea id="prompt"></textarea>
+    <div class="btns">
+      <button id="save">保存设置</button>
+      <span class="saved" id="saved">已保存 ✓</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <label>已捕获的 Grok 请求</label>
+      <div class="btns" style="margin-top:0">
+        <button id="copy">复制全部 JSON</button>
+        <button id="clear">清空</button>
+      </div>
+    </div>
+    <div class="hint">在「学习模式」下点一次 Grok,这里就会出现请求结构。把它发我即可接入。</div>
+    <div id="caps"></div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
