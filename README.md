@@ -1,6 +1,14 @@
 # X 大白话 · Grok 解读增强
 
+**简体中文** · [English](./README.en.md)
+
 悬停 X（Twitter）上的任意推文或长文「文章」，自动用**大白话、口语化的中文**解释它在讲什么——结果以一张炫酷卡片就地展示。
+
+<p align="center">
+  <img src="./docs/demo.gif" alt="演示:卡片流式输出大白话解读" width="360">
+  &nbsp;&nbsp;
+  <img src="./docs/screenshot.png" alt="文章正文旁就地展示大白话卡片" width="600">
+</p>
 
 > 巧妙之处：插件**不碰任何签名、不存任何凭证**。它复用 X 自己已经签名好的 Grok 请求，只在请求发出前把内容改写成「说人话」的指令，再把 Grok 的流式回答读出来渲染。
 
