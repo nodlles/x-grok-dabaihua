@@ -7,17 +7,35 @@
 (function () {
   "use strict";
 
-  let capture = true;
+  let capture = false;
+  let captureEpoch = 0;
+  let activeRequest = null;
   let armed = null; // { reqId, prompt, tweetUrl, tweetText }
 
   window.addEventListener("message", (e) => {
     if (e.source !== window) return;
     const d = e.data;
     if (!d || !d.__xdbh) return;
-    if (d.__xdbh === "config") capture = !!d.capture;
-    else if (d.__xdbh === "arm") armed = d; // 准备改写下一个 add_response
-    else if (d.__xdbh === "disarm") armed = null;
+    if (d.__xdbh === "config") {
+      if (capture !== !!d.capture) captureEpoch++;
+      capture = !!d.capture;
+    } else if (d.__xdbh === "arm") {
+      cancelRequest();
+      armed = d;
+      activeRequest = { reqId: d.reqId, cancelled: false, reader: null };
+    } else if (d.__xdbh === "disarm" && activeRequest && d.reqId === activeRequest.reqId) {
+      cancelRequest();
+    }
   });
+
+  function cancelRequest() {
+    armed = null;
+    if (!activeRequest) return;
+    activeRequest.cancelled = true;
+    // 只停止扩展读取的 clone,保留 X 自己的原始请求和响应。
+    if (activeRequest.reader) activeRequest.reader.cancel().catch(() => {});
+    activeRequest = null;
+  }
 
   function post(msg) {
     try { window.postMessage(msg, "*"); } catch (_) {}
@@ -86,20 +104,26 @@
   }
 
   // ---- 流式解析 NDJSON,把 final 文字发给 content.js ----
-  async function streamToCard(res, reqId) {
+  async function streamToCard(res, task) {
+    const reqId = task.reqId;
     try {
+      if (task.cancelled) return;
+      if (!res.ok) throw new Error("Grok HTTP " + res.status);
       post({ __xdbh: "grok-start", reqId });
       if (!res.body || !res.body.getReader) {
         const txt = await res.text();
+        if (task.cancelled) return;
         txt.split("\n").forEach((l) => handleLine(l, reqId));
         post({ __xdbh: "grok-done", reqId });
         return;
       }
       const reader = res.body.getReader();
+      task.reader = reader;
       const dec = new TextDecoder();
       let buf = "";
       for (;;) {
         const { done, value } = await reader.read();
+        if (task.cancelled) return;
         if (done) break;
         buf += dec.decode(value, { stream: true });
         let idx;
@@ -112,7 +136,10 @@
       if (buf.trim()) handleLine(buf, reqId);
       post({ __xdbh: "grok-done", reqId });
     } catch (e) {
-      post({ __xdbh: "grok-error", reqId, error: String(e) });
+      if (!task.cancelled) post({ __xdbh: "grok-error", reqId, error: String(e) });
+    } finally {
+      if (task.reader) task.reader.releaseLock();
+      if (activeRequest === task) activeRequest = null;
     }
   }
 
@@ -144,15 +171,16 @@
     if (!h) return out;
     try {
       const put = (k, v) => (out[k] = SENSITIVE.includes(String(k).toLowerCase()) ? "«已打码·" + String(v).length + "字符»" : v);
-      if (typeof h.forEach === "function") h.forEach((v, k) => put(k, v));
-      else if (Array.isArray(h)) h.forEach(([k, v]) => put(k, v));
+      if (Array.isArray(h)) h.forEach(([k, v]) => put(k, v));
+      else if (typeof h.forEach === "function") h.forEach((v, k) => put(k, v));
       else for (const k in h) put(k, h[k]);
     } catch (_) {}
     return out;
   }
-  function captureResp(res, url, method, init) {
+  function captureResp(res, url, method, init, epoch) {
     try {
       res.text().then((txt) => {
+        if (!capture || epoch !== captureEpoch) return;
         post({
           __xdbh: "capture",
           payload: {
@@ -179,20 +207,28 @@
     const isAdd = isAddResponseBody(bodyStr);
 
     // 改写(仅当已武装且这是 add_response)
-    let reqId = null;
+    let task = null;
     if (isAdd && armed) {
-      reqId = armed.reqId;
+      task = activeRequest;
       init = Object.assign({}, init, { body: rewriteBody(bodyStr, armed) });
       armed = null;
     }
 
     const p = origFetch.call(this, input, init);
 
-    if (isAdd && reqId) {
-      p.then((res) => streamToCard(res.clone(), reqId)).catch((e) => post({ __xdbh: "grok-error", reqId, error: String(e) }));
+    if (task) {
+      p.then((res) => {
+        if (!task.cancelled) return streamToCard(res.clone(), task);
+      }).catch((e) => {
+        if (!task.cancelled) post({ __xdbh: "grok-error", reqId: task.reqId, error: String(e) });
+        if (activeRequest === task) activeRequest = null;
+      });
     } else if (capture && (looksLikeGrok(url) || isAdd)) {
       // 学习模式:连 add_response(URL 可能为空)也按请求体形状抓下来
-      p.then((res) => captureResp(res.clone(), url || "(add_response)", init && init.method || "POST", init));
+      const epoch = captureEpoch;
+      p.then((res) => {
+        if (capture && epoch === captureEpoch) captureResp(res.clone(), url || "(add_response)", init && init.method || "POST", init, epoch);
+      }).catch(() => {});
     }
     return p;
   };
@@ -208,7 +244,9 @@
   XHR.prototype.send = function (body) {
     const info = this.__xdbh;
     if (info && capture && looksLikeGrok(info.url)) {
+      const epoch = captureEpoch;
       this.addEventListener("load", function () {
+        if (!capture || epoch !== captureEpoch) return;
         let sample = "";
         try { sample = String(this.responseText || "").slice(0, 6000); } catch (_) {}
         post({ __xdbh: "capture", payload: { kind: "xhr", ts: Date.now(), method: info.method, url: info.url, reqBody: String(body || "").slice(0, 4000), respLen: sample.length, respSample: sample } });

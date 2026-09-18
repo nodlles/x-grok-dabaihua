@@ -7,7 +7,7 @@
     enabled: true,
     mode: "grok", // grok（真·大白话） | demo（看 UI） | learn（抓请求结构）
     hoverDelay: 1200,
-    capture: true,
+    capture: false,
     hideDrawer: true, // 隐藏 X 自己的 Grok 抽屉
     drawerSelector: "", // 自定义抽屉选择器(我猜不中时手动填)
     theme: "graphite", // graphite | light | ocean | neon | auto
@@ -21,7 +21,10 @@
   let ring = null;
   let card = null;
   let pending = null; // { reqId, api, raw, started }
+  let activeRun = null; // 当前卡片运行及其可取消的等待
+  const hiddenDrawers = new Map(); // 元素 -> 被覆盖的原始内联样式
   let dead = false;
+  let tornDown = false;
   let suppressCardClose = false; // 我们主动点击页面按钮(Grok/抽屉)时,别让「点卡片外关闭」误关自己的卡片
 
   // 程序化点击页面元素(X 的 Grok 按钮、抽屉控件)时,这些 click 会冒泡到 document,
@@ -46,27 +49,67 @@
   }
 
   function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    closeCard();
     dead = true;
+    window.postMessage({ __xdbh: "config", capture: false }, "*");
     try { if (drawerObserver) drawerObserver.disconnect(); } catch (_) {}
+  }
+
+  function cancelRun() {
+    const reqId = pending && pending.reqId;
+    pending = null;
+    if (reqId) window.postMessage({ __xdbh: "disarm", reqId }, "*");
+    const run = activeRun;
+    activeRun = null;
+    if (run) {
+      run.timers.forEach((resolve, timer) => {
+        clearTimeout(timer);
+        resolve(false);
+      });
+      run.timers.clear();
+    }
+    restoreGrokDrawers();
+  }
+
+  function closeCard() {
+    cancelHover();
+    cancelRun();
+    if (card) card.remove();
+    card = null;
+  }
+
+  function captureEnabled() {
+    return settings.enabled && settings.mode === "learn" && settings.capture;
+  }
+
+  function applySettings(value) {
+    const previous = settings;
+    settings = { ...DEFAULTS, ...(value || {}) };
+    if (!settings.enabled || previous.mode !== settings.mode ||
+        previous.prompt !== settings.prompt || previous.capture !== settings.capture) closeCard();
+    if (!settings.hideDrawer || previous.drawerSelector !== settings.drawerSelector) restoreGrokDrawers();
+    if (card) card.dataset.theme = resolveTheme(settings.theme);
+    pushConfigToHook();
+    hideGrokDrawers();
   }
 
   // ---------- 设置加载 ----------
   try {
     chrome.storage.local.get("settings", (res) => {
-      settings = { ...DEFAULTS, ...((res && res.settings) || {}) };
-      pushConfigToHook();
+      if (alive()) applySettings(res && res.settings);
     });
     chrome.storage.onChanged.addListener((changes) => {
       if (!alive()) return;
       if (changes.settings) {
-        settings = { ...DEFAULTS, ...(changes.settings.newValue || {}) };
-        pushConfigToHook();
+        applySettings(changes.settings.newValue);
       }
     });
   } catch (_) {}
 
   function pushConfigToHook() {
-    window.postMessage({ __xdbh: "config", capture: settings.capture }, "*");
+    window.postMessage({ __xdbh: "config", capture: captureEnabled() }, "*");
   }
 
   // ---------- 接收主世界 hook 的消息 ----------
@@ -78,6 +121,7 @@
 
     // 学习模式:捕获结构
     if (d.__xdbh === "capture" && d.payload) {
+      if (!captureEnabled()) return;
       storeCapture(d.payload);
       if (card && card.dataset.mode === "learn") {
         const note = card.querySelector(".xdbh-learn-note");
@@ -111,20 +155,20 @@
       } else {
         saveCache(pending.url, { raw: pending.raw, sources: pending.sources });
       }
-      pending = null;
+      cancelRun();
     } else if (d.__xdbh === "grok-error") {
       pending.api.hideSkeleton();
       pending.api.setStatus("");
       pending.api.setText("出错了:" + d.error);
-      pending = null;
+      cancelRun();
     }
   });
 
   function storeCapture(payload) {
-    if (!alive()) return;
+    if (!alive() || !captureEnabled()) return;
     try {
       chrome.storage.local.get("captures", (res) => {
-        if (!alive()) return;
+        if (!alive() || !captureEnabled()) return;
         const list = (res && res.captures) || [];
         list.unshift(payload);
         try { chrome.storage.local.set({ captures: list.slice(0, 30) }); } catch (_) {}
@@ -135,7 +179,7 @@
 
   // ---------- hover 检测 ----------
   document.addEventListener("mouseover", (e) => {
-    if (!settings.enabled) return;
+    if (!alive() || !settings.enabled) return;
     const t = e.target.closest('article[data-testid="tweet"]');
     if (!t || t === activeTweet) return;
     startHover(t);
@@ -202,6 +246,7 @@
 
   // ---------- 触发 ----------
   function trigger(tweet) {
+    if (!alive() || !settings.enabled) { cancelHover(); return; }
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = null;
     if (ring) {
@@ -244,7 +289,8 @@
 
   // ---------- 卡片 ----------
   function showCard(tweet, text) {
-    if (card) card.remove();
+    closeCard();
+    activeTweet = tweet;
     card = document.createElement("div");
     card.className = "xdbh-card";
     card.dataset.mode = settings.mode;
@@ -271,19 +317,19 @@
       </div>`;
     positionCard(card, tweet);
     document.body.appendChild(card);
+    const el = card;
     requestAnimationFrame(() => {
-      card.classList.add("xdbh-in");
-      clampCard(card);
+      if (card !== el) return;
+      el.classList.add("xdbh-in");
+      clampCard(el);
     });
     makeDraggable(card);
 
-    card.querySelector(".xdbh-close").onclick = () => {
-      card.remove();
-      card = null;
-      restoreGrokDrawers();
-    };
-    const api = makeCardApi(card);
+    card.querySelector(".xdbh-close").onclick = closeCard;
     const run = (force) => {
+      cancelRun();
+      activeRun = { timers: new Map() };
+      const api = makeCardApi(el, activeRun);
       api.reset();
       if (settings.mode === "learn") runLearn(tweet, text, api);
       else if (settings.mode === "demo") runDemo(text, api);
@@ -293,12 +339,23 @@
     run(false);
   }
 
-  function makeCardApi(el) {
+  function makeCardApi(el, run) {
     const skeleton = el.querySelector(".xdbh-skeleton");
     const textEl = el.querySelector(".xdbh-text");
     const statusEl = el.querySelector(".xdbh-status");
     const noteEl = el.querySelector(".xdbh-learn-note");
+    const isActive = () => activeRun === run && card === el && settings.enabled && alive();
+    const wait = (ms) => new Promise((resolve) => {
+      if (!isActive()) { resolve(false); return; }
+      const timer = setTimeout(() => {
+        run.timers.delete(timer);
+        resolve(isActive());
+      }, ms);
+      run.timers.set(timer, resolve);
+    });
     return {
+      isActive,
+      wait,
       reset() {
         skeleton.style.display = "flex";
         textEl.textContent = "";
@@ -328,23 +385,24 @@
       },
       async stream(str) {
         for (let i = 0; i < str.length; i++) {
+          if (!isActive()) return;
           textEl.textContent += str[i];
-          if (i % 2 === 0) await sleep(12);
+          if (i % 2 === 0 && !await wait(12)) return;
         }
         statusEl.textContent = "";
       },
     };
   }
 
-  // ---------- 两种模式 ----------
+  // ---------- 三种模式 ----------
   async function runDemo(text, api) {
     api.setStatus("正在用大白话解释…");
-    await sleep(550);
+    if (!await api.wait(550)) return;
     api.hideSkeleton();
     const msg =
       "【演示文本】这条推文大概在说:\n\n" +
       (text ? "“" + text.slice(0, 60) + "…” " : "") +
-      "——现在是 UI 演示模式,还没接真正的 Grok。\n\n等你在「学习模式」下点一次 Grok、插件抓到请求结构后,这里就会换成真·大白话解读。";
+      "——现在是 UI 演示模式,不会调用 Grok。\n\n在设置里切换到「大白话」模式,即可使用当前 X 登录态获取真实解读,无需先运行学习模式。";
     await api.stream(msg);
   }
 
@@ -373,7 +431,7 @@
     );
 
     // 触发 X 真实的 Grok 解读(由它去签名发送,我们只改写 + 读取)
-    await sleep(120);
+    if (!await api.wait(120)) return;
     const btn = findGrokButton(tweet);
     if (btn) {
       safeClick(btn);
@@ -385,54 +443,43 @@
       api.note("没自动找到 Grok 按钮 —— 请手动点一次这条推文的 Grok 解读,插件会自动接管");
     }
 
-    // 抽屉弹出后尽快把它移到屏幕外(MutationObserver 也会兜底)
-    if (settings.hideDrawer) {
-      let tries = 0;
-      let hidden = 0;
-      const timer = setInterval(() => {
-        hidden += hideGrokDrawers() || 0;
-        if (++tries >= 24) {
-          // 约 3 秒
-          clearInterval(timer);
-          if (!hidden) {
-            console.warn(
-              "[X大白话] 没匹配到 Grok 抽屉元素。请右键抽屉→检查,把它的选择器填到设置页『自定义抽屉选择器』。"
-            );
-          }
-        }
-      }, 125);
-    }
+    hideGrokDrawers();
 
-    // 超时兜底
-    setTimeout(() => {
-      if (pending && pending.reqId === reqId && !pending.started) {
-        api.hideSkeleton();
-        api.setStatus("");
-        api.setText(
-          "没等到 Grok 响应 😕\n可能没触发到那个 Grok 解读按钮。试试:\n1) 手动点一次该推文的 Grok 解读;\n2) 或在设置里临时切到「演示」看 UI。"
-        );
-        window.postMessage({ __xdbh: "disarm" }, "*");
-        pending = null;
-      }
-    }, 10000);
+    // 首响应超时和整体超时都归当前任务管理,重试/关闭后不再执行。
+    api.wait(10000).then((active) => {
+      if (!active || !pending || pending.reqId !== reqId || pending.started) return;
+      api.setStatus("");
+      api.setText("没等到 Grok 响应。请确认已登录 X、Grok 可用,然后点「重新解释」。");
+      cancelRun();
+    });
+    api.wait(120000).then((active) => {
+      if (!active || !pending || pending.reqId !== reqId) return;
+      api.hideSkeleton();
+      api.setStatus("解读超时 · 可点「重新解释」重试");
+      cancelRun();
+    });
   }
 
   async function runLearn(tweet, text, api) {
+    if (!captureEnabled()) {
+      api.setText("请求捕获默认关闭。需要调试时,请在设置里开启「学习模式请求捕获」。");
+      return;
+    }
     api.setStatus("学习模式:正在触发 Grok…");
     const btn = findGrokButton(tweet);
-    await sleep(300);
+    if (!await api.wait(300)) return;
     api.hideSkeleton();
     if (btn) {
-      btn.click();
+      safeClick(btn);
       await api.stream(
         "已自动点击这条推文的 Grok 按钮。\n\n插件正在后台监听并捕获 Grok 的网络请求。"
       );
-      api.note("等待捕获中…");
+      if (api.isActive()) api.note("等待捕获中…");
     } else {
       await api.stream(
         "没在这条推文上找到 Grok 按钮 😅\n\n请你手动点一次页面上的 Grok 解读按钮(任意推文都行),插件会自动在后台捕获那次请求结构。"
       );
-      api.note("等待你手动点击 Grok…");
+      if (api.isActive()) api.note("等待你手动点击 Grok…");
     }
   }
 
@@ -480,7 +527,7 @@
   // 文章详情页没有内联「Grok 操作」按钮:打开 Grok 抽屉,在输入框发一条消息触发
   // add_response。正文已通过 arm 交给 hook,hook 会把这条消息改写成大白话指令(含
   // 正文)并流式读回 —— 所以这里输入什么不重要,只是为了让 X 发出那个请求。
-  function summarizeViaDrawer(api) {
+  async function summarizeViaDrawer(api) {
     const opener =
       document.querySelector('[data-testid="GrokDrawerHeader"]') ||
       Array.from(document.querySelectorAll("button")).find(
@@ -488,13 +535,12 @@
       );
     if (opener) safeClick(opener);
 
-    let tries = 0;
-    const timer = setInterval(() => {
+    for (let tries = 0; tries < 24; tries++) {
+      if (!await api.wait(150)) return;
       const ta = Array.from(document.querySelectorAll("textarea")).find((t) =>
         /随便问|问点什么|ask/i.test(t.getAttribute("placeholder") || "")
       );
       if (ta) {
-        clearInterval(timer);
         try {
           ta.focus();
           const set = Object.getOwnPropertyDescriptor(
@@ -505,20 +551,16 @@
           ta.dispatchEvent(new Event("input", { bubbles: true }));
         } catch (_) {}
         // 输入后发送按钮才会激活,等一拍再点
-        setTimeout(() => {
-          const send = Array.from(
-            document.querySelectorAll('button,[role="button"]')
-          ).find((b) => /问\s*Grok|发送|send/i.test(b.getAttribute("aria-label") || ""));
-          if (send) safeClick(send);
-          else if (api) api.note("已打开 Grok,请按回车发送一下,插件会接管");
-        }, 320);
+        if (!await api.wait(320)) return;
+        const send = Array.from(
+          document.querySelectorAll('button,[role="button"]')
+        ).find((b) => /问\s*Grok|发送|send/i.test(b.getAttribute("aria-label") || ""));
+        if (send) safeClick(send);
+        else api.note("已打开 Grok,请按回车发送一下,插件会接管");
         return;
       }
-      if (++tries >= 24) {
-        clearInterval(timer);
-        if (api) api.note("没能自动打开 Grok 输入框 —— 请手动在 Grok 里随便发一句");
-      }
-    }, 150);
+    }
+    if (api.isActive()) api.note("没能自动打开 Grok 输入框 —— 请手动在 Grok 里随便发一句");
   }
 
   function bySelector(root) {
@@ -549,19 +591,13 @@
     return bySelector(document) || byText(document);
   }
 
-  function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
-  }
-
-  // 滚动 / 点击空白处关闭卡片
+  // 点击空白处关闭卡片
   document.addEventListener("click", (e) => {
     if (suppressCardClose) return; // 我们自己点的 Grok/抽屉按钮,不算「点卡片外」
     // 点 Grok 抽屉内部(我们驱动总结时会用到)也不关卡片
     if (e.target.closest && e.target.closest('[data-testid="GrokDrawer"]')) return;
     if (card && !card.contains(e.target)) {
-      card.remove();
-      card = null;
-      restoreGrokDrawers();
+      closeCard();
     }
   });
 
@@ -586,15 +622,19 @@
   }
 
   function hideGrokDrawers() {
-    if (!settings.hideDrawer) return;
+    if (!alive() || !settings.enabled || !settings.hideDrawer || !card || !pending) return;
     let hit = 0;
     for (const sel of currentDrawerSelectors()) {
       let nodes;
       try { nodes = document.querySelectorAll(sel); } catch (_) { continue; }
       nodes.forEach((n) => {
         if (n.closest(".xdbh-card")) return; // 别误伤自己
-        if (n.dataset.xdbhHidden) { hit++; return; }
-        n.dataset.xdbhHidden = "1";
+        if (hiddenDrawers.has(n)) { hit++; return; }
+        const original = {};
+        for (const prop of ["position", "left", "top", "opacity", "pointer-events"]) {
+          original[prop] = [n.style.getPropertyValue(prop), n.style.getPropertyPriority(prop)];
+        }
+        hiddenDrawers.set(n, original);
         n.style.setProperty("position", "fixed", "important");
         n.style.setProperty("left", "-99999px", "important");
         n.style.setProperty("top", "-99999px", "important");
@@ -608,19 +648,18 @@
 
   // 关卡片时把被移到屏幕外的原生 Grok 抽屉复位,否则用户之后用不了 X 自己的 Grok
   function restoreGrokDrawers() {
-    document.querySelectorAll('[data-xdbh-hidden="1"]').forEach((n) => {
-      n.style.removeProperty("position");
-      n.style.removeProperty("left");
-      n.style.removeProperty("top");
-      n.style.removeProperty("opacity");
-      n.style.removeProperty("pointer-events");
-      delete n.dataset.xdbhHidden;
+    hiddenDrawers.forEach((original, n) => {
+      for (const [prop, [value, priority]] of Object.entries(original)) {
+        if (value) n.style.setProperty(prop, value, priority);
+        else n.style.removeProperty(prop);
+      }
     });
+    hiddenDrawers.clear();
   }
 
   let drawerObsScheduled = false;
   const drawerObserver = new MutationObserver(() => {
-    if (drawerObsScheduled) return;
+    if (!pending || drawerObsScheduled) return;
     drawerObsScheduled = true;
     requestAnimationFrame(() => {
       drawerObsScheduled = false;

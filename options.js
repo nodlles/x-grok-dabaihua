@@ -3,7 +3,7 @@ const DEFAULTS = {
   enabled: true,
   mode: "grok",
   hoverDelay: 1200,
-  capture: true,
+  capture: false,
   hideDrawer: true,
   drawerSelector: "",
   theme: "graphite",

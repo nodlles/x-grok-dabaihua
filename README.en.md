@@ -22,10 +22,10 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
 - **Three modes**:
   - `grok` real plain-language (default)
   - `demo` pure UI preview, no Grok call
-  - `learn` learning mode, captures the Grok request structure (credentials auto-redacted) for research
+  - `learn` learning mode, saves debugging records after capture is explicitly enabled (sensitive request headers are redacted)
 - **Result cache**: the same tweet shows instantly; hit "Re-explain" to force a refresh.
 - **Themes**: graphite / light / ocean / neon / follow system.
-- **Hide native drawer**: moves X's own Grok drawer off-screen (rather than closing it, to avoid interrupting the streaming request).
+- **Hide native drawer**: moves X's own Grok drawer off-screen only while explaining; restores its original inline styles on completion, error, timeout, or card close.
 
 ## Install (load unpacked)
 
@@ -42,6 +42,20 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
 ## Settings
 
 Click the extension icon or open "Options" from `chrome://extensions` to configure: on/off, mode, hover delay, theme, custom prompt, whether to hide the native drawer, and (if auto-detection misses) a manual drawer selector.
+
+Request capture is off by default. It requires the extension to be enabled, learning mode selected, and the capture switch enabled. Existing switch preferences are preserved, but capture is inactive in plain-language and demo modes. Up to 30 records are stored locally, including request bodies and response samples that may contain chat content. View, copy, or clear them in Settings. Check records before sharing: header redaction does not sanitize the entire record.
+
+Closing the card, re-explaining, or changing modes stops the old task's automated clicks, waits, and card reader. Requests already sent by X may continue and consume quota; the extension does not abort X's own requests. Waiting ends after 10 seconds without an initial response or 120 seconds overall.
+
+## Development checks
+
+Use Node.js 20 or newer; no dependencies are required:
+
+```bash
+node --test tests/*.test.cjs
+```
+
+Tests execute the actual scripts with simulated DOM, storage, and timers. They cover cancellation, drawer restoration, capture settings, and streaming. They do not replace compatibility checks against live X buttons, drawers, and APIs. After editing, reload the extension in `chrome://extensions/` and refresh X.
 
 ## How it works
 
