@@ -36,7 +36,7 @@
     },
     {
       "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["render.js", "cache.js", "cardui.js", "content.js"],
+      "js": ["render.js", "cache.js", "cardui.js", "conversation.js", "content.js"],
       "css": ["card.css"],
       "run_at": "document_idle",
       "world": "ISOLATED"

@@ -12,7 +12,7 @@ function resolveTheme(theme) {
 
 function positionCard(el, tweet) {
   const rect = tweet.getBoundingClientRect();
-  const W = 360;
+  const W = Math.min(400, window.innerWidth - 16);
   const M = 8; // 边距
   el.style.width = W + "px";
 
@@ -30,7 +30,7 @@ function positionCard(el, tweet) {
   const avail = window.innerHeight - top - M;
   el.style.maxHeight = avail + "px";
   const body = el.querySelector(".xdbh-card-body");
-  if (body) body.style.maxHeight = Math.max(120, avail - 96) + "px";
+  if (body) body.style.maxHeight = Math.max(80, avail - 210) + "px";
 }
 
 // 测得真实高度后,把卡片夹进视口(底部触发时不被截断)。已拖动则不动它。
@@ -52,7 +52,7 @@ function makeDraggable(el) {
   const head = el.querySelector(".xdbh-card-head");
   if (!head) return;
   head.addEventListener("mousedown", (e) => {
-    if (e.target.closest(".xdbh-close")) return;
+    if (e.target.closest("button")) return;
     e.preventDefault();
     el.dataset.dragged = "1";
     const r = el.getBoundingClientRect();

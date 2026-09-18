@@ -35,7 +35,7 @@ function clock() {
 
 class Element {
   constructor() {
-    this.dataset = {}; this.children = new Map(); this.listeners = {}; this.textContent = '';
+    this.dataset = {}; this.children = new Map(); this.listeners = {}; this.textContent = ''; this.value = ''; this.childNodes = [];
     this.classList = { add() {} }; this.connected = true; this.attrs = {};
     const values = new Map();
     this.style = {
@@ -49,7 +49,12 @@ class Element {
   querySelectorAll() { return []; }
   closest() { return null; }
   contains(el) { return el === this || [...this.children.values()].includes(el); }
+  setAttribute(k, v) { this.attrs[k] = v; }
+  appendChild(el) { this.childNodes.push(el); return el; }
+  focus() { this.listeners.focus?.({}); }
+  dispatchEvent() {}
   getAttribute(k) { return this.attrs[k] || null; }
+  getClientRects() { return [{}]; }
   getBoundingClientRect() { return { top: 20, right: 500 }; }
   addEventListener(name, fn) { this.listeners[name] = fn; }
   remove() { this.connected = false; }
@@ -62,6 +67,7 @@ function contentHarness(settings = {}, cached = null) {
   drawer.style.setProperty('position', 'absolute');
   drawer.style.setProperty('left', '30px', 'important');
   drawer.style.setProperty('opacity', '0.8');
+  drawer.querySelector = () => null;
   const button = new Element(); button.attrs['aria-label'] = 'Grok';
   const tweet = new Element();
   tweet.closest = () => tweet;
@@ -94,20 +100,27 @@ function contentHarness(settings = {}, cached = null) {
     resolveTheme: (t) => t, positionCard() {}, clampCard() {}, makeDraggable() {},
     getCache: () => cached, saveCache: (url, data) => writes.push({ url, ...data }), xdbhRenderRich: (raw) => raw,
   });
+  vm.runInContext(source('conversation.js'), context);
   vm.runInContext(source('content.js'), context);
   return {
     ...timers, drawer, button, tweet, messages, cards, writes, document,
     async hover() { await timers.advance(0); events.mouseover({ target: tweet }); await timers.advance(1200); },
     async mutate() { observer(); await timers.advance(16); },
     invalidate() { chrome.runtime.id = null; },
-    mouseover() { events.mouseover({ target: tweet }); },
+    mouseover(target = tweet) { events.mouseover({ target }); },
+    outside() { events.click({ target: new Element() }); },
+    question(value) { const input = cards.at(-1).querySelector('.xdbh-question'); input.value = value; input.listeners.input?.(); return input; },
+    submit() { cards.at(-1).querySelector('.xdbh-composer').listeners.submit({ preventDefault() {} }); },
+    native() { cards.at(-1).querySelector('.xdbh-native').click(); },
     drawerFallback() {
       tweet.querySelectorAll = (sel) => sel.includes('tweetText') ? [{ innerText: 'Long article text for drawer fallback' }] : [];
       const input = new Element(); input.attrs.placeholder = 'Ask'; input.focus = () => {}; input.dispatchEvent = () => {};
       const send = new Element(); send.attrs['aria-label'] = 'Send';
+      drawer.querySelector = () => input;
+      drawer.querySelectorAll = () => [send];
       document.querySelector = () => null;
       document.querySelectorAll = (sel) => sel === 'textarea' ? [input] : sel === 'button,[role="button"]' ? [send] : /drawer/i.test(sel) ? [drawer] : [];
-      window.HTMLTextAreaElement = class { set value(v) { this.textContent = v; } };
+      window.HTMLTextAreaElement = class { set value(v) { this.value = v; this.textContent = v; } };
       context.Event = class {};
       return { input, send };
     },
@@ -176,7 +189,7 @@ test('a started but stalled response times out and restores drawer', async () =>
   const h = contentHarness(); await h.hover(); await h.advance(150);
   h.message({ __xdbh: 'grok-start', reqId: h.arm().reqId });
   await h.advance(120000);
-  assert.match(h.cards.at(-1).querySelector('.xdbh-status').textContent, /超时/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /超时/);
   assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
 });
 
@@ -311,4 +324,150 @@ test('first-response timeout disarms the hook and restores the native drawer', a
   assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /没等到/);
   assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
   assert.ok(h.messages.some((d) => d.__xdbh === 'disarm' && d.reqId === reqId));
+});
+
+function finish(h, text) {
+  const reqId = h.arm().reqId;
+  h.message({ __xdbh: 'grok-start', reqId });
+  h.message({ __xdbh: 'grok-chunk', reqId, text });
+  h.message({ __xdbh: 'grok-done', reqId });
+}
+
+test('cached explanation supports multiple followups without replacing the explanation cache', async () => {
+  const h = contentHarness({}, { raw: 'original explanation', sources: [] });
+  const { input, send } = h.drawerFallback(); send.onclick = () => { input.value = ''; };
+  await h.hover(); h.question('Why?'); h.submit(); h.submit();
+  assert.equal(h.messages.filter((m) => m.__xdbh === 'arm').length, 1);
+  assert.match(h.arm().message, /original explanation/);
+  await h.advance(400); assert.equal(send.clicks, 1);
+  finish(h, 'Because.');
+  h.question('Example?'); h.submit();
+  assert.match(h.arm().message, /Why\?/); assert.match(h.arm().message, /Because\./);
+  assert.match(h.arm().message, /Example\?/);
+  await h.advance(400); finish(h, 'An example.');
+  assert.equal(h.cards.at(-1).querySelector('.xdbh-text').innerHTML, 'original explanation');
+  assert.equal(h.cards.at(-1).querySelector('.xdbh-thread').childNodes.length, 2);
+  assert.equal(h.writes.length, 0);
+});
+
+test('fresh explanation unlocks composer and followup answers do not overwrite the cached summary', async () => {
+  const h = contentHarness(); await h.hover(); await h.advance(150); finish(h, 'fresh explanation');
+  const { input, send } = h.drawerFallback(); send.onclick = () => { input.value = ''; };
+  h.question('Explain more'); h.submit(); await h.advance(400); finish(h, 'more detail');
+  assert.equal(h.writes.length, 1); assert.equal(h.writes[0].raw, 'fresh explanation');
+});
+
+test('typing and chatting pin the card against outside clicks and other tweets', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); await h.hover();
+  h.question('draft').focus(); h.outside();
+  const other = new Element(); other.closest = () => other;
+  h.mouseover(other); await h.advance(2000);
+  assert.equal(h.cards.length, 1); assert.equal(h.cards[0].connected, true);
+  h.close(); assert.equal(h.cards[0].connected, false);
+});
+
+test('IME composition and Shift+Enter never submit a question', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); await h.hover();
+  const input = h.question('中文问题');
+  for (const e of [{ isComposing: true }, { keyCode: 229 }, { shiftKey: true }]) {
+    input.listeners.keydown({ key: 'Enter', preventDefault() {}, ...e });
+  }
+  assert.equal(h.arm(), undefined);
+  input.listeners.keydown({ key: 'Enter', preventDefault() {} }); assert.ok(h.arm().followup);
+});
+
+test('failed followup restores the question for retry and excludes failed output from context', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input, send } = h.drawerFallback();
+  send.onclick = () => { input.value = ''; }; await h.hover(); h.question('retry me'); h.submit();
+  await h.advance(400);
+  h.message({ __xdbh: 'grok-chunk', reqId: h.arm().reqId, text: 'incomplete answer' });
+  h.message({ __xdbh: 'grok-error', reqId: h.arm().reqId, error: 'offline' });
+  assert.equal(h.cards[0].querySelector('.xdbh-question').value, 'retry me');
+  assert.equal(h.cards[0].querySelector('.xdbh-question').disabled, false);
+  h.submit(); assert.ok(!h.arm().message.includes('incomplete answer'));
+});
+
+test('native handoff fills contextual draft, preserves card, and never auto-sends', async () => {
+  const h = contentHarness({}, { raw: 'cached explanation', sources: [] }); const { input, send } = h.drawerFallback();
+  await h.hover(); h.question('native question'); h.native(); await h.advance(500);
+  assert.match(input.value, /cached explanation/); assert.match(input.value, /native question/);
+  assert.equal(send.clicks || 0, 0); assert.equal(h.arm(), undefined);
+  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.cards[0].querySelector('.xdbh-question').value, 'native question');
+});
+
+test('native and inline followup preserve existing Grok drafts', async () => {
+  for (const native of [false, true]) {
+    const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input, send } = h.drawerFallback();
+    input.value = 'my existing draft'; await h.hover(); h.question('next question');
+    if (native) h.native(); else h.submit();
+    await h.advance(500);
+    assert.equal(input.value, 'my existing draft'); assert.equal(send.clicks || 0, 0);
+    assert.equal(h.cards[0].querySelector('.xdbh-question').disabled, false);
+  }
+});
+
+test('closing a followup before send removes only the extension draft and never sends it', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input, send } = h.drawerFallback();
+  await h.hover(); h.question('next'); h.submit(); await h.advance(130);
+  assert.match(input.value, /next/); h.close(); await h.advance(500);
+  assert.equal(input.value, ''); assert.equal(send.clicks || 0, 0);
+});
+
+test('native draft changes are not overwritten or sent during a pending followup', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input, send } = h.drawerFallback();
+  await h.hover(); h.question('next'); h.submit(); await h.advance(130);
+  input.value = 'edited by user'; await h.advance(500);
+  assert.equal(input.value, 'edited by user'); assert.equal(send.clicks || 0, 0);
+});
+
+test('disabled native send button fails safely and retains question for retry', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input, send } = h.drawerFallback();
+  send.disabled = true; await h.hover(); h.question('next'); h.submit(); await h.advance(2100);
+  assert.equal(send.clicks || 0, 0); assert.equal(input.value, '');
+  assert.equal(h.cards[0].querySelector('.xdbh-question').value, 'next');
+});
+
+test('followup hook only consumes the exact prepared message and preserves native conversation ID', async () => {
+  const h = hookHarness();
+  h.message({ __xdbh: 'arm', reqId: 'followup', followup: true, message: 'specific context and question' });
+  await fetchGrok(h); await settle();
+  assert.equal(h.requests[0].init.body, requestBody); assert.equal(h.posts.length, 0);
+  const body = JSON.parse(requestBody); body.responses[0].message = 'specific context and question';
+  await h.window.fetch('https://x.com/i/api/grok/add_response', { method: 'POST', body: JSON.stringify(body) }); await settle();
+  const sent = JSON.parse(h.requests[1].init.body);
+  assert.equal(sent.conversationId, 'c'); assert.equal(sent.promptMetadata, undefined);
+  assert.equal(sent.responses[0].message, 'specific context and question');
+  assert.ok(h.posts.some((m) => m.__xdbh === 'grok-done' && m.reqId === 'followup'));
+});
+
+test('oversized context is rejected rather than silently losing the original explanation', () => {
+  const context = vm.createContext({}); vm.runInContext(source('conversation.js'), context);
+  assert.throws(() => context.xdbhConversationPrompt({ initial: 'a'.repeat(60000) }, 'why'), /60000/);
+  assert.throws(() => context.xdbhConversationPrompt({}, 'a'.repeat(2001)), /2000/);
+});
+
+test('followups retain citation sources from cached explanations and each completed answer', async () => {
+  const source1 = { url: 'https://example.org/first', title: 'First source' };
+  const source2 = { url: 'https://example.org/second', title: 'Second source' };
+  const h = contentHarness({}, { raw: 'answer [1]', sources: [source1] });
+  const { input, send } = h.drawerFallback(); send.onclick = () => { input.value = ''; };
+  await h.hover(); h.question('第1个来源可信吗？'); h.submit();
+  assert.match(h.arm().message, /https:\/\/example.org\/first/);
+  await h.advance(400);
+  h.message({ __xdbh: 'grok-start', reqId: h.arm().reqId });
+  h.message({ __xdbh: 'grok-sources', reqId: h.arm().reqId, sources: [source2] });
+  h.message({ __xdbh: 'grok-chunk', reqId: h.arm().reqId, text: 'second answer [1]' });
+  h.message({ __xdbh: 'grok-done', reqId: h.arm().reqId });
+  h.native(); await h.advance(200);
+  assert.match(input.value, /https:\/\/example.org\/first/);
+  assert.match(input.value, /https:\/\/example.org\/second/);
+});
+
+
+test('native handoff refuses a read-only input rather than reporting a prepared draft', async () => {
+  const h = contentHarness({}, { raw: 'cached', sources: [] }); const { input } = h.drawerFallback();
+  input.readOnly = true; await h.hover(); h.native(); await h.advance(300);
+  assert.equal(input.value, '');
+  assert.match(h.cards[0].querySelector('.xdbh-status').textContent, /未能/);
 });

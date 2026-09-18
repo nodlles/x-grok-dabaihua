@@ -21,6 +21,7 @@
   let ring = null;
   let card = null;
   let pending = null; // { reqId, api, raw, started }
+  let conversation = null; // 当前卡片的原文、初次解读与已完成问答
   let activeRun = null; // 当前卡片运行及其可取消的等待
   const hiddenDrawers = new Map(); // 元素 -> 被覆盖的原始内联样式
   let dead = false;
@@ -71,6 +72,7 @@
       run.timers.clear();
     }
     restoreGrokDrawers();
+    if (conversation) { conversation.busy = false; updateComposer(); }
   }
 
   function closeCard() {
@@ -78,6 +80,7 @@
     cancelRun();
     if (card) card.remove();
     card = null;
+    conversation = null;
   }
 
   function captureEnabled() {
@@ -137,7 +140,7 @@
       pending.raw = "";
       pending.sources = [];
       pending.api.hideSkeleton();
-      pending.api.setStatus("Grok 正在用大白话解释…");
+      pending.api.setStatus(pending.turn ? "Grok 正在回答…" : "Grok 正在用大白话解释…");
     } else if (d.__xdbh === "grok-status") {
       pending.api.setStatus(d.text);
     } else if (d.__xdbh === "grok-sources") {
@@ -149,20 +152,34 @@
       pending.raw += d.text;
       pending.api.setHtml(xdbhRenderRich(pending.raw, pending.sources));
     } else if (d.__xdbh === "grok-done") {
-      pending.api.setStatus("");
       if (!pending.raw.trim()) {
-        pending.api.setText("Grok 没有返回文字内容(可能是图片/视频帖,或被它当成了别的请求)。");
+        failRequest("Grok 没有返回文字内容,请重试或在 Grok 中继续。");
+        return;
+      }
+      pending.api.setStatus("");
+      if (pending.turn) {
+        Object.assign(pending.turn, { raw: pending.raw, sources: pending.sources, state: "done" });
       } else {
+        conversation.initial = pending.raw;
+        conversation.initialSources = pending.sources;
         saveCache(pending.url, { raw: pending.raw, sources: pending.sources });
       }
       cancelRun();
     } else if (d.__xdbh === "grok-error") {
-      pending.api.hideSkeleton();
-      pending.api.setStatus("");
-      pending.api.setText("出错了:" + d.error);
-      cancelRun();
+      failRequest("出错了:" + d.error);
     }
   });
+
+  function failRequest(message) {
+    if (!pending) return;
+    pending.api.setStatus("");
+    pending.api.setText(message);
+    if (pending.turn) {
+      pending.turn.state = "error";
+      conversation.input.value = pending.turn.question;
+    }
+    cancelRun();
+  }
 
   function storeCapture(payload) {
     if (!alive() || !captureEnabled()) return;
@@ -179,7 +196,7 @@
 
   // ---------- hover 检测 ----------
   document.addEventListener("mouseover", (e) => {
-    if (!alive() || !settings.enabled) return;
+    if (!alive() || !settings.enabled || (conversation && conversation.locked)) return;
     const t = e.target.closest('article[data-testid="tweet"]');
     if (!t || t === activeTweet) return;
     startHover(t);
@@ -246,7 +263,7 @@
 
   // ---------- 触发 ----------
   function trigger(tweet) {
-    if (!alive() || !settings.enabled) { cancelHover(); return; }
+    if (!alive() || !settings.enabled || (conversation && conversation.locked)) { cancelHover(); return; }
     if (hoverTimer) clearTimeout(hoverTimer);
     hoverTimer = null;
     if (ring) {
@@ -308,16 +325,45 @@
             <span></span><span></span><span></span>
           </div>
           <div class="xdbh-text"></div>
+          <div class="xdbh-thread" aria-label="追问记录"></div>
           <div class="xdbh-learn-note"></div>
         </div>
+        <form class="xdbh-composer" hidden>
+          <label class="xdbh-question-label" for="xdbh-question">继续追问</label>
+          <textarea id="xdbh-question" class="xdbh-question" rows="2" maxlength="2000"
+            placeholder="哪里没看懂？接着问…" disabled></textarea>
+          <div class="xdbh-composer-actions">
+            <span class="xdbh-chat-hint">Enter 发送 · Shift+Enter 换行</span>
+            <button class="xdbh-send" type="submit" disabled>发送</button>
+          </div>
+        </form>
         <footer class="xdbh-card-foot">
           <span class="xdbh-status"></span>
-          <button class="xdbh-redo">重新解释</button>
+          <button class="xdbh-native" type="button" hidden>在 Grok 中继续 ↗</button>
+          <button class="xdbh-redo" type="button">重新解释</button>
         </footer>
       </div>`;
     positionCard(card, tweet);
     document.body.appendChild(card);
     const el = card;
+    conversation = {
+      el, tweet, text, url: extractTweetUrl(tweet), initial: "", initialSources: [], turns: [], busy: false, locked: false,
+      input: el.querySelector(".xdbh-question"),
+    };
+    const current = conversation;
+    const form = el.querySelector(".xdbh-composer");
+    form.hidden = settings.mode !== "grok";
+    el.querySelector(".xdbh-native").hidden = settings.mode !== "grok";
+    current.input.addEventListener("focus", () => lockConversation(current));
+    current.input.addEventListener("input", updateComposer);
+    current.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+        e.preventDefault();
+        submitFollowup(current);
+      }
+    });
+    form.addEventListener("submit", (e) => { e.preventDefault(); submitFollowup(current); });
+    el.querySelector(".xdbh-native").onclick = () => continueInGrok(current);
     requestAnimationFrame(() => {
       if (card !== el) return;
       el.classList.add("xdbh-in");
@@ -328,6 +374,12 @@
     card.querySelector(".xdbh-close").onclick = closeCard;
     const run = (force) => {
       cancelRun();
+      current.initial = "";
+      current.initialSources = [];
+      current.turns = [];
+      current.input.value = "";
+      el.querySelector(".xdbh-thread").textContent = "";
+      updateComposer();
       activeRun = { timers: new Map() };
       const api = makeCardApi(el, activeRun);
       api.reset();
@@ -339,9 +391,9 @@
     run(false);
   }
 
-  function makeCardApi(el, run) {
+  function makeCardApi(el, run, responseEl) {
     const skeleton = el.querySelector(".xdbh-skeleton");
-    const textEl = el.querySelector(".xdbh-text");
+    const textEl = responseEl || el.querySelector(".xdbh-text");
     const statusEl = el.querySelector(".xdbh-status");
     const noteEl = el.querySelector(".xdbh-learn-note");
     const isActive = () => activeRun === run && card === el && settings.enabled && alive();
@@ -357,7 +409,7 @@
       isActive,
       wait,
       reset() {
-        skeleton.style.display = "flex";
+        skeleton.style.display = responseEl ? "none" : "flex";
         textEl.textContent = "";
         noteEl.textContent = "";
         statusEl.textContent = "";
@@ -416,12 +468,17 @@
       if (cached) {
         api.hideSkeleton();
         api.setHtml(xdbhRenderRich(cached.raw, cached.sources));
-        api.setStatus("缓存结果 · 点「重新解释」刷新");
+        api.setStatus("缓存结果 · 可以继续追问");
+        conversation.initial = cached.raw;
+        conversation.initialSources = cached.sources || [];
+        updateComposer();
         return;
       }
     }
 
     pending = { reqId, api, raw: "", started: false, sources: [], url: tweetUrl };
+    conversation.busy = true;
+    updateComposer();
     api.setStatus("正在唤起 Grok…");
 
     // 武装主世界 hook:下一个 add_response 改写成我们的大白话 prompt
@@ -445,19 +502,89 @@
 
     hideGrokDrawers();
 
-    // 首响应超时和整体超时都归当前任务管理,重试/关闭后不再执行。
+    watchRequest(api, reqId);
+  }
+
+  function watchRequest(api, reqId) {
     api.wait(10000).then((active) => {
       if (!active || !pending || pending.reqId !== reqId || pending.started) return;
-      api.setStatus("");
-      api.setText("没等到 Grok 响应。请确认已登录 X、Grok 可用,然后点「重新解释」。");
-      cancelRun();
+      failRequest("没等到 Grok 响应。请确认已登录 X、Grok 可用,然后重试。");
     });
     api.wait(120000).then((active) => {
       if (!active || !pending || pending.reqId !== reqId) return;
-      api.hideSkeleton();
-      api.setStatus("解读超时 · 可点「重新解释」重试");
-      cancelRun();
+      failRequest("解读超时 · 请重试,或在 Grok 中继续");
     });
+  }
+
+  function lockConversation(current) {
+    if (conversation !== current) return;
+    current.locked = true;
+    cancelHover();
+    current.el.querySelector(".xdbh-chat-hint").textContent = "对话已固定 · × 关闭";
+  }
+
+  function updateComposer() {
+    if (!conversation || !card) return;
+    const current = conversation;
+    const ready = !!current.initial && !current.busy;
+    current.input.disabled = !ready;
+    card.querySelector(".xdbh-send").disabled = !ready || !current.input.value.trim();
+    card.querySelector(".xdbh-native").disabled = !ready;
+    card.querySelector(".xdbh-redo").disabled = current.busy && current.locked;
+  }
+
+  function submitFollowup(current) {
+    if (conversation !== current || current.busy || !current.initial || !alive()) return;
+    const question = current.input.value.trim();
+    if (!question) return;
+    let message;
+    try { message = xdbhConversationPrompt(current, question); }
+    catch (error) { current.el.querySelector(".xdbh-status").textContent = error.message; return; }
+    lockConversation(current);
+    cancelRun();
+    current.busy = true;
+    current.input.value = "";
+    updateComposer();
+    const turn = { question, raw: "", sources: [], state: "pending" };
+    current.turns.push(turn);
+    const row = document.createElement("section");
+    row.className = "xdbh-turn";
+    const user = document.createElement("div");
+    user.className = "xdbh-user-message";
+    user.textContent = question;
+    const answer = document.createElement("div");
+    answer.className = "xdbh-text xdbh-answer";
+    answer.setAttribute("aria-label", "Grok 回答");
+    answer.textContent = "正在思考…";
+    row.appendChild(user);
+    row.appendChild(answer);
+    current.el.querySelector(".xdbh-thread").appendChild(row);
+    activeRun = { timers: new Map() };
+    const api = makeCardApi(current.el, activeRun, answer);
+    const reqId = "r" + Date.now() + Math.random().toString(36).slice(2, 6);
+    pending = { reqId, api, turn, raw: "", started: false, sources: [], url: current.url };
+    api.setStatus("正在发送追问…");
+    window.postMessage({ __xdbh: "arm", reqId, followup: true, message }, "*");
+    watchRequest(api, reqId);
+    sendViaDrawer(api, message, false);
+  }
+
+  async function continueInGrok(current) {
+    if (conversation !== current || current.busy || !current.initial || !alive()) return;
+    let message;
+    try { message = xdbhConversationPrompt(current, current.input.value, true); }
+    catch (error) { current.el.querySelector(".xdbh-status").textContent = error.message; return; }
+    lockConversation(current);
+    cancelRun();
+    current.busy = true;
+    updateComposer();
+    activeRun = { timers: new Map() };
+    const api = makeCardApi(current.el, activeRun);
+    api.setStatus("正在准备 Grok 输入框…");
+    const ready = await sendViaDrawer(api, message, true);
+    if (!api.isActive()) return;
+    api.setStatus(ready ? "背景已填入 Grok,请编辑问题后发送" : "未能填入背景,请稍后重试");
+    cancelRun();
   }
 
   async function runLearn(tweet, text, api) {
@@ -524,43 +651,78 @@
     return true;
   }
 
-  // 文章详情页没有内联「Grok 操作」按钮:打开 Grok 抽屉,在输入框发一条消息触发
-  // add_response。正文已通过 arm 交给 hook,hook 会把这条消息改写成大白话指令(含
-  // 正文)并流式读回 —— 所以这里输入什么不重要,只是为了让 X 发出那个请求。
-  async function summarizeViaDrawer(api) {
-    const opener =
-      document.querySelector('[data-testid="GrokDrawerHeader"]') ||
-      Array.from(document.querySelectorAll("button")).find(
-        (b) => /^grok$/i.test((b.getAttribute("aria-label") || "").trim())
-      );
-    if (opener) safeClick(opener);
-
-    for (let tries = 0; tries < 24; tries++) {
-      if (!await api.wait(150)) return;
-      const ta = Array.from(document.querySelectorAll("textarea")).find((t) =>
-        /随便问|问点什么|ask/i.test(t.getAttribute("placeholder") || "")
-      );
-      if (ta) {
-        try {
-          ta.focus();
-          const set = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype,
-            "value"
-          ).set;
-          set.call(ta, "总结");
-          ta.dispatchEvent(new Event("input", { bubbles: true }));
-        } catch (_) {}
-        // 输入后发送按钮才会激活,等一拍再点
-        if (!await api.wait(320)) return;
-        const send = Array.from(
-          document.querySelectorAll('button,[role="button"]')
-        ).find((b) => /问\s*Grok|发送|send/i.test(b.getAttribute("aria-label") || ""));
-        if (send) safeClick(send);
-        else api.note("已打开 Grok,请按回车发送一下,插件会接管");
-        return;
+  // 初次文章解读、卡片追问和原生草稿共用同一抽屉定位逻辑。
+  // 输入框与发送按钮必须属于同一个 Grok 容器,避免操作发帖或私信输入框。
+  function findDrawerInput() {
+    for (const sel of currentDrawerSelectors()) {
+      let roots;
+      try { roots = document.querySelectorAll(sel); } catch (_) { continue; }
+      for (const root of roots) {
+        const input = root.querySelector("textarea");
+        if (input && input.getClientRects().length && !input.closest('[hidden],[aria-hidden="true"]')) return { root, input };
       }
     }
-    if (api.isActive()) api.note("没能自动打开 Grok 输入框 —— 请手动在 Grok 里随便发一句");
+    return null;
+  }
+
+  async function sendViaDrawer(api, message, draftOnly) {
+    // postMessage 的 arm 必须先被主环境处理,再触发页面发送。
+    if (!await api.wait(120)) return false;
+    let target = findDrawerInput();
+    if (!target) {
+      const opener = document.querySelector('[data-testid="GrokDrawerHeader"]');
+      if (opener) safeClick(opener);
+    }
+    for (let tries = 0; tries < 24; tries++) {
+      if (!api.isActive()) return false;
+      target = findDrawerInput();
+      if (target) break;
+      if (!await api.wait(150)) return false;
+    }
+    const unavailable = (text) => {
+      if (pending && pending.api === api) failRequest(text);
+      else api.note(text);
+      return false;
+    };
+    if (!target) return unavailable("没找到 Grok 输入框,请手动打开 Grok 抽屉后重试。");
+    const { root, input } = target;
+    if (input.disabled || input.readOnly) return unavailable("Grok 输入框暂不可用,请等待当前回答结束后重试。");
+    if (input.value.trim()) return unavailable("Grok 输入框里已有草稿,请先发送或清空,再重试。");
+    try {
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      set.call(input, message);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    } catch (_) { return unavailable("未能填入 Grok 输入框,请稍后重试。"); }
+    if (draftOnly) {
+      input.focus();
+      return true;
+    }
+    // 取消或失败时只移除插件自己填入且尚未改变的草稿。
+    const clearDraft = () => {
+      if (input.value !== message) return;
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      set.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    for (let tries = 0; tries < 12; tries++) {
+      if (!await api.wait(150)) { clearDraft(); return false; }
+      if (input.value !== message) return unavailable("Grok 草稿已被修改,已停止自动发送,请重试。");
+      const send = Array.from(root.querySelectorAll('button,[role="button"]')).find((b) =>
+        /问\s*Grok|ask\s*grok|发送|send/i.test(b.getAttribute("aria-label") || "") &&
+        !b.disabled && b.getAttribute("aria-disabled") !== "true" && b.getClientRects().length
+      );
+      if (send) {
+        safeClick(send);
+        hideGrokDrawers();
+        return true;
+      }
+    }
+    clearDraft();
+    return unavailable("Grok 发送按钮暂不可用,请稍后重试。");
+  }
+
+  function summarizeViaDrawer(api) {
+    return sendViaDrawer(api, "总结", false);
   }
 
   function bySelector(root) {
@@ -596,7 +758,7 @@
     if (suppressCardClose) return; // 我们自己点的 Grok/抽屉按钮,不算「点卡片外」
     // 点 Grok 抽屉内部(我们驱动总结时会用到)也不关卡片
     if (e.target.closest && e.target.closest('[data-testid="GrokDrawer"]')) return;
-    if (card && !card.contains(e.target)) {
+    if (card && !card.contains(e.target) && !(conversation && conversation.locked)) {
       closeCard();
     }
   });

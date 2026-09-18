@@ -90,10 +90,10 @@
         const orig = body.responses[0];
         const origMsg = typeof orig.message === "string" ? orig.message : "";
         const hasOwnText = !!(a.tweetText && String(a.tweetText).trim());
-        const msg = buildPrompt(a, origMsg);
+        const msg = a.followup ? a.message : buildPrompt(a, origMsg);
         // 保留原 response 的其它字段(promptSource 等),只换 message
         body.responses = [Object.assign({}, orig, { message: msg, sender: 1 })];
-        if (hasOwnText) {
+        if (hasOwnText || a.followup) {
           delete body.promptMetadata; // 正文已自带,切普通聊天
         }
         // 否则保留 promptMetadata,让后端补正文
@@ -208,7 +208,13 @@
 
     // 改写(仅当已武装且这是 add_response)
     let task = null;
-    if (isAdd && armed) {
+    // 追问只接管插件实际填入的那条消息,避免误改写同时发生的原生聊天。
+    let matchesArmed = true;
+    if (armed && armed.followup) {
+      try { matchesArmed = JSON.parse(bodyStr).responses[0].message === armed.message; }
+      catch (_) { matchesArmed = false; }
+    }
+    if (isAdd && armed && matchesArmed) {
       task = activeRequest;
       init = Object.assign({}, init, { body: rewriteBody(bodyStr, armed) });
       armed = null;
