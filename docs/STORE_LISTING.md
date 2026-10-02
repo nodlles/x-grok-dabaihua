@@ -2,7 +2,7 @@
 
 ## 发布包与素材
 
-运行 `node scripts/package.cjs`（Node.js 20+，系统需有 zip/unzip）。脚本先运行测试，再只打包运行文件并逐项核对内容。输出：`dist/x-grok-dabaihua-v0.3.0.zip` 和 SHA-256 校验文件。不要上传仓库根目录旧的 0.2.0 ZIP。
+运行 `node scripts/package.cjs`（Node.js 20+，系统需有 zip/unzip）。脚本先运行测试，再只打包运行文件并逐项核对内容。输出：`dist/x-grok-dabaihua-v0.3.1.zip` 和 SHA-256 校验文件。不要上传仓库根目录旧的 0.2.0 ZIP。
 
 - 图标：`docs/store/store-icon-128.png`
 - 截图：`docs/store/screenshot-1280x800.png`
