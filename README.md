@@ -72,15 +72,17 @@ node --test tests/*.test.cjs
 
 | 文件 | 世界 | 职责 |
 |---|---|---|
-| `inject.js` | MAIN | 包裹 `fetch`/`XHR`，按**请求体形状**识别 Grok `add_response`；武装后改写 message 为大白话指令，并流式解析 NDJSON 回传 |
+| `inject.js` | MAIN | 接管新版 Grok WebSocket `response.create` 并按会话、请求和回答 ID 读取流式回答；保留旧版 `fetch`/`add_response` 兼容及 `fetch`/`XHR` 学习捕获 |
 | `content.js` | ISOLATED | hover 进度环、卡片 UI、提取推文/文章正文、定位并点击 Grok 入口、接收主世界消息渲染 |
 | `render.js` / `cardui.js` / `cache.js` / `card.css` | ISOLATED | 富文本渲染、卡片交互、缓存、样式 |
 | `conversation.js` | ISOLATED | 组装原文、解读、来源与多轮问答背景，校验长度 |
 | `options.html` / `options.js` | — | 设置页 |
 
-两个世界通过 `window.postMessage` 通信。改写时：
+两个世界通过 `window.postMessage` 通信。WebSocket 请求只把输入文本替换为大白话指令，保留消息的其他字段。旧版 fetch 请求改写时：
 - 普通推文（DOM 里有正文）→ 把正文塞进 prompt、切成普通聊天；
 - 文章/图视频帖（DOM 里没正文）→ **保留** `promptMetadata`，让 X 后端补正文，只追加「说大白话」的风格要求。
+
+新版 X Grok 抽屉的可编辑输入框与旧版 textarea 均支持追问和草稿交接。修改本地代码后，必须在浏览器扩展管理页重新加载扩展，并刷新 X 页面，让主世界与隔离世界脚本一起更新。学习模式的请求捕获目前仅覆盖旧版 `fetch`/`XHR`，不记录 WebSocket 聊天。
 
 ## 免责声明
 

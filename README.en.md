@@ -72,15 +72,17 @@ Tests execute the actual scripts with simulated DOM, storage, and timers. They c
 
 | File | World | Responsibility |
 |---|---|---|
-| `inject.js` | MAIN | Wraps `fetch`/`XHR`, detects the Grok `add_response` by **request-body shape**; once armed, rewrites the message into the plain-language instruction and parses the NDJSON stream back |
+| `inject.js` | MAIN | Handles current Grok WebSocket `response.create` messages and correlates streamed replies by session, request, and response IDs; retains legacy `fetch`/`add_response` support and `fetch`/`XHR` learning captures |
 | `content.js` | ISOLATED | Hover progress ring, card UI, extracting tweet/article text, locating and clicking the Grok entry point, receiving main-world messages to render |
 | `render.js` / `cardui.js` / `cache.js` / `card.css` | ISOLATED | Rich-text rendering, card interaction, caching, styles |
 | `conversation.js` | ISOLATED | Builds contextual prompts from the post, explanation, sources, and completed turns; validates length |
 | `options.html` / `options.js` | — | Settings page |
 
-The two worlds talk via `window.postMessage`. When rewriting:
+The two worlds talk via `window.postMessage`. WebSocket requests replace the input text with the plain-language prompt and preserve the other message fields. Legacy fetch requests are rewritten as follows:
 - Normal tweets (text present in the DOM) → embed the text into the prompt, switch to a plain chat message;
 - Articles / image / video posts (no text in the DOM) → **keep** `promptMetadata` so X's backend supplies the body, and only append the "speak plainly" style requirement.
+
+Current X Grok contenteditable inputs and legacy textareas both support follow-ups and draft handoff. After local code changes, reload the extension in your browser's extension manager and refresh X so both script worlds update. Learning-mode request capture currently covers legacy `fetch`/`XHR` only; it does not record WebSocket chats.
 
 ## Disclaimer
 

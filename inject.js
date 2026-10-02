@@ -1,8 +1,8 @@
-// inject.js —— 主世界(MAIN)。拦截页面自己的 fetch / XHR。
+// inject.js —— 主世界(MAIN)。拦截页面自己的 fetch / XHR / WebSocket。
 // 两件事:
-//   1) 【改写】当我们「武装(arm)」后,把 X 发出的 Grok add_response 请求体里的
-//      message 改成「大白话」指令 —— 复用 X 自己已签名的请求,我们不碰签名。
-//   2) 【流式读取】把 Grok 的 NDJSON 流解析出 final 文字,实时发给 content.js 渲染。
+//   1) 【改写】武装后把 WebSocket response.create 或旧版 add_response 的消息
+//      改成「大白话」指令 —— 复用 X 自己的连接与请求,不碰签名。
+//   2) 【流式读取】读取 gateway 回答事件或旧版 NDJSON,实时发给 content.js 渲染。
 //   附带:学习模式下仍可捕获 Grok 请求结构(凭证打码)。
 (function () {
   "use strict";
@@ -194,6 +194,112 @@
     } catch (_) {}
   }
 
+  // 新版 X Grok 通过 WebSocket gateway 发送 response.create,不再走 add_response。
+  // 包装 prototype.send 也能覆盖已经建立的连接,不改变连接、凭证或原生消息监听器。
+  const WS = window.WebSocket;
+  if (WS) {
+    const origSend = WS.prototype.send;
+    const observed = new WeakSet();
+    WS.prototype.send = function (data) {
+      let frame;
+      if (looksLikeGrok(this.url) && typeof data === "string") {
+        try { frame = JSON.parse(data); } catch (_) {}
+        if (!observed.has(this)) {
+          observed.add(this);
+          this.addEventListener("message", (e) => handleSocketMessage(this, e.data));
+          const disconnected = () => {
+            const task = activeRequest;
+            if (task && task.socket === this && !task.cancelled) {
+              post({ __xdbh: "grok-error", reqId: task.reqId, error: "Grok 连接中断,请重试。" });
+              cancelRequest();
+            }
+          };
+          this.addEventListener("close", disconnected);
+          this.addEventListener("error", disconnected);
+        }
+      }
+      const event = frame && frame.event;
+      const item = event && event.item;
+      const text = item && Array.isArray(item.content) && item.content.find((p) => p && p.type === "input_text" && typeof p.text === "string");
+      let task = null;
+      if (armed && event && event.type === "response.create" && event.event_id &&
+          frame.session_id && text && item.role === "user" &&
+          (!armed.followup || text.text === armed.message)) {
+        text.text = armed.followup ? armed.message : buildPrompt(armed, text.text);
+        data = JSON.stringify(frame);
+        task = activeRequest;
+        Object.assign(task, { socket: this, sessionId: frame.session_id, eventId: event.event_id, responseId: null, seen: new Set(), textFormat: null });
+        armed = null;
+      }
+      try {
+        return origSend.call(this, data);
+      } catch (e) {
+        if (task && !task.cancelled) {
+          post({ __xdbh: "grok-error", reqId: task.reqId, error: String(e) });
+          cancelRequest();
+        }
+        throw e;
+      }
+    };
+  }
+
+  function handleSocketMessage(socket, data) {
+    const task = activeRequest;
+    if (!task || task.cancelled || task.socket !== socket || typeof data !== "string") return;
+    let frame;
+    try { frame = JSON.parse(data); } catch (_) { return; }
+    const event = frame && frame.event;
+    if (!event || frame.session_id !== task.sessionId) return;
+    const reqId = task.reqId;
+    if (event.type === "error" && (!event.client_event_id || event.client_event_id === task.eventId)) {
+      post({ __xdbh: "grok-error", reqId, error: event.error && event.error.message || "Grok 请求失败" });
+      cancelRequest();
+      return;
+    }
+    if (event.type === "response.created") {
+      if (event.client_event_id !== task.eventId || !event.response || !event.response.id || task.responseId) return;
+      task.responseId = event.response.id;
+      post({ __xdbh: "grok-start", reqId });
+      return;
+    }
+    const responseId = event.response_id || event.response && event.response.id;
+    if (!task.responseId || responseId !== task.responseId) return;
+    if (event.event_id) {
+      if (task.seen.has(event.event_id)) return;
+      task.seen.add(event.event_id);
+    }
+    if (event.type === "response.chunk") {
+      const chunk = event.chunk || {};
+      const text = chunk.text;
+      if (text && typeof text.text === "string") {
+        if (text.channel === "CHANNEL_ASSISTANT_RESPONSE") {
+          if (!task.textFormat || task.textFormat === "chunk") {
+            task.textFormat = "chunk";
+            post({ __xdbh: "grok-chunk", reqId, text: text.text });
+          }
+        } else if (text.channel === "CHANNEL_ASSISTANT_NOTETAKER_HEADER") {
+          post({ __xdbh: "grok-status", reqId, text: text.text });
+        }
+      }
+      const pages = chunk.tool_result && chunk.tool_result.web_search && chunk.tool_result.web_search.webpages;
+      if (Array.isArray(pages) && pages.length) {
+        post({ __xdbh: "grok-sources", reqId, sources: pages.filter((p) => p && p.url).map((p) => ({ url: p.url, title: p.title })) });
+      }
+    } else if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
+      if (!task.textFormat || task.textFormat === "delta") {
+        task.textFormat = "delta";
+        post({ __xdbh: "grok-chunk", reqId, text: event.delta });
+      }
+    } else if (event.type === "response.output_text.done" && !task.textFormat && typeof event.text === "string" && event.text) {
+      task.textFormat = "done";
+      post({ __xdbh: "grok-chunk", reqId, text: event.text });
+    } else if (event.type === "response.done" && event.response) {
+      if (event.response.status === "completed") post({ __xdbh: "grok-done", reqId });
+      else post({ __xdbh: "grok-error", reqId, error: "Grok 回答未完成: " + event.response.status });
+      if (activeRequest === task) activeRequest = null;
+    }
+  }
+
   // ---- 包装 fetch ----
   const origFetch = window.fetch;
   window.fetch = function (input, init) {
@@ -261,5 +367,5 @@
     return origSend.apply(this, arguments);
   };
 
-  console.log("%c[X大白话] 已就绪(主世界 · 可改写+流式读取 Grok)", "color:#7c5cff");
+  console.log("%c[X大白话] 已就绪(主世界 · fetch/WebSocket Grok)", "color:#7c5cff");
 })();

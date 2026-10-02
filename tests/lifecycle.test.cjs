@@ -112,11 +112,18 @@ function contentHarness(settings = {}, cached = null) {
     question(value) { const input = cards.at(-1).querySelector('.xdbh-question'); input.value = value; input.listeners.input?.(); return input; },
     submit() { cards.at(-1).querySelector('.xdbh-composer').listeners.submit({ preventDefault() {} }); },
     native() { cards.at(-1).querySelector('.xdbh-native').click(); },
-    drawerFallback() {
+    drawerFallback(rich = false) {
       tweet.querySelectorAll = (sel) => sel.includes('tweetText') ? [{ innerText: 'Long article text for drawer fallback' }] : [];
       const input = new Element(); input.attrs.placeholder = 'Ask'; input.focus = () => {}; input.dispatchEvent = () => {};
+      if (rich) {
+        delete input.value;
+        input.attrs.contenteditable = 'true'; input.attrs.role = 'textbox';
+        window.getSelection = () => ({ removeAllRanges() {}, addRange() {} });
+        document.createRange = () => ({ selectNodeContents() {} });
+        document.execCommand = (command, _, text) => { input.textContent = command === 'delete' ? '' : text; return true; };
+      }
       const send = new Element(); send.attrs['aria-label'] = 'Send';
-      drawer.querySelector = () => input;
+      drawer.querySelector = (selector) => rich && selector === 'textarea' ? null : input;
       drawer.querySelectorAll = () => [send];
       document.querySelector = () => null;
       document.querySelectorAll = (sel) => sel === 'textarea' ? [input] : sel === 'button,[role="button"]' ? [send] : /drawer/i.test(sel) ? [drawer] : [];
@@ -208,14 +215,22 @@ function hookHarness(fetchImpl) {
   let listener;
   const posts = [], requests = [];
   class XHR { open() {} send() {} }
+  class Socket {
+    constructor(url = 'wss://grok.com/ws') { this.url = url; this.sent = []; this.listeners = {}; }
+    send(data) { this.sent.push(data); }
+    addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
+    emit(type, data) { for (const fn of this.listeners[type] || []) fn({ data }); }
+    receive(frame) { this.emit('message', JSON.stringify(frame)); }
+  }
   const window = {
     XMLHttpRequest: XHR,
+    WebSocket: Socket,
     fetch(input, init) { requests.push({ input, init }); return fetchImpl ? fetchImpl(input, init) : Promise.resolve(new Response('{"result":{"messageTag":"final","message":"answer"}}\n')); },
     addEventListener: (_, fn) => { listener = fn; },
     postMessage: (d) => posts.push(d),
   };
   vm.runInNewContext(source('inject.js'), { window, Request, URL, TextDecoder, console: { log() {} }, location: { origin: 'https://x.com' } });
-  return { window, posts, requests, message: (d) => listener({ source: window, data: d }) };
+  return { window, posts, requests, socket: () => new Socket(), message: (d) => listener({ source: window, data: d }) };
 }
 const requestBody = JSON.stringify({ conversationId: 'c', responses: [{ message: 'https://x.com/a/status/1' }], promptMetadata: { type: 'GROK_ANALYZE' } });
 const arm = (h, id = 'r1') => h.message({ __xdbh: 'arm', reqId: id, prompt: 'plain', tweetText: 'original text' });
@@ -470,4 +485,131 @@ test('native handoff refuses a read-only input rather than reporting a prepared 
   input.readOnly = true; await h.hover(); h.native(); await h.advance(300);
   assert.equal(input.value, '');
   assert.match(h.cards[0].querySelector('.xdbh-status').textContent, /未能/);
+});
+
+const socketRequest = (text = 'https://x.com/a/status/1', eventId = 'client-1') => ({
+  session_id: 'session-1',
+  event: { type: 'response.create', event_id: eventId, item: {
+    type: 'message', role: 'user', content: [{ type: 'input_text', text }],
+    x_grok: { client_message_id: 'native-message' },
+  } },
+});
+const socketEvent = (event, session = 'session-1') => ({ session_id: session, event });
+const socketStart = (socket, clientId = 'client-1', responseId = 'response-1') => socket.receive(socketEvent({
+  type: 'response.created', client_event_id: clientId, response: { id: responseId, status: 'in_progress' },
+}));
+const socketChunk = (socket, text, responseId = 'response-1', channel = 'CHANNEL_ASSISTANT_RESPONSE') => socket.receive(socketEvent({
+  type: 'response.chunk', response_id: responseId, chunk: { text: { text, channel } },
+}));
+const socketDone = (socket, status = 'completed') => socket.receive(socketEvent({
+  type: 'response.done', response: { id: 'response-1', status },
+}));
+
+test('Grok WebSocket requests on an existing socket are rewritten and streamed to the card', () => {
+  const h = hookHarness(), socket = h.socket(), original = socketRequest();
+  socket.send(JSON.stringify({ event: { type: 'ping' } }));
+  arm(h); socket.send(JSON.stringify(original));
+  const sent = JSON.parse(socket.sent[1]);
+  assert.match(sent.event.item.content[0].text, /original text/);
+  assert.equal(sent.session_id, original.session_id);
+  assert.equal(sent.event.event_id, original.event.event_id);
+  assert.deepEqual(sent.event.item.x_grok, original.event.item.x_grok);
+  socketStart(socket); socketChunk(socket, '思考中', 'response-1', 'CHANNEL_ASSISTANT_NOTETAKER_HEADER');
+  socketChunk(socket, '中文'); socketChunk(socket, '回答'); socketDone(socket);
+  assert.equal(h.posts.filter(m => m.__xdbh === 'grok-chunk').map(m => m.text).join(''), '中文回答');
+  assert.ok(h.posts.some(m => m.__xdbh === 'grok-done' && m.reqId === 'r1'));
+});
+
+test('WebSocket responses are correlated by socket, session, client event and response ID', () => {
+  const h = hookHarness(), socket = h.socket(), other = h.socket();
+  arm(h); socket.send(JSON.stringify(socketRequest()));
+  other.send(JSON.stringify({ event: { type: 'ping' } })); socketStart(other);
+  socketStart(socket, 'unrelated'); socketChunk(socket, 'unrelated');
+  socket.receive(socketEvent({ type: 'response.created', client_event_id: 'client-1', response: { id: 'response-1' } }, 'other-session'));
+  assert.ok(!h.posts.some(m => m.__xdbh === 'grok-start'));
+  socketStart(socket); socketChunk(socket, 'wrong response', 'old-response'); socketChunk(socket, 'correct');
+  assert.deepEqual(h.posts.filter(m => m.__xdbh === 'grok-chunk').map(m => m.text), ['correct']);
+});
+
+test('WebSocket followups consume only the exact prepared draft and disarm leaves native traffic intact', () => {
+  const h = hookHarness(), socket = h.socket();
+  h.message({ __xdbh: 'arm', reqId: 'followup', followup: true, message: 'context and question' });
+  const native = JSON.stringify(socketRequest('native question'));
+  socket.send(native); assert.equal(socket.sent[0], native);
+  socket.send(JSON.stringify(socketRequest('context and question'))); socketStart(socket);
+  assert.ok(h.posts.some(m => m.__xdbh === 'grok-start' && m.reqId === 'followup'));
+  h.message({ __xdbh: 'disarm', reqId: 'followup' }); const count = h.posts.length;
+  socketChunk(socket, 'late'); socketDone(socket); socket.send(native);
+  assert.equal(h.posts.length, count); assert.equal(socket.sent.at(-1), native);
+});
+
+test('new contenteditable Grok input supports followup sends and draft-only native handoff', async () => {
+  for (const native of [false, true]) {
+    const h = contentHarness({}, { raw: 'cached explanation', sources: [] });
+    const { input, send } = h.drawerFallback(true);
+    await h.hover(); h.question('new question');
+    if (native) h.native(); else h.submit();
+    await h.advance(500);
+    assert.match(input.textContent, /cached explanation/); assert.match(input.textContent, /new question/);
+    assert.equal(send.clicks || 0, native ? 0 : 1);
+  }
+});
+
+test('contenteditable Grok input preserves existing or edited drafts and clears only cancelled extension drafts', async () => {
+  for (const scenario of ['existing', 'edited', 'cancelled']) {
+    const h = contentHarness({}, { raw: 'cached', sources: [] });
+    const { input, send } = h.drawerFallback(true);
+    if (scenario === 'existing') input.textContent = 'my draft';
+    await h.hover(); h.question('next'); h.submit(); await h.advance(130);
+    if (scenario === 'edited') input.textContent = 'my draft';
+    if (scenario === 'cancelled') h.close();
+    await h.advance(500);
+    assert.equal(input.textContent, scenario === 'cancelled' ? '' : 'my draft');
+    assert.equal(send.clicks || 0, 0);
+  }
+});
+
+test('unarmed and non-Grok sockets pass through without card messages; disconnects fail the active request', () => {
+  const h = hookHarness(), socket = h.socket(), other = new h.window.WebSocket('wss://example.org/chat');
+  const data = JSON.stringify(socketRequest()); socket.send(data);
+  assert.equal(socket.sent[0], data); assert.equal(h.posts.length, 0);
+  arm(h); other.send(data); assert.equal(other.sent[0], data);
+  socket.send(data); socketStart(socket); socket.emit('close');
+  assert.ok(h.posts.some(m => m.__xdbh === 'grok-error' && /连接中断/.test(m.error)));
+});
+
+test('WebSocket duplicate events and output_text.done do not append the answer twice', () => {
+  const h = hookHarness(), socket = h.socket(); arm(h); socket.send(JSON.stringify(socketRequest())); socketStart(socket);
+  const event = socketEvent({ type: 'response.chunk', event_id: 'same', response_id: 'response-1', chunk: {
+    text: { text: 'answer', channel: 'CHANNEL_ASSISTANT_RESPONSE' },
+  } });
+  socket.receive(event); socket.receive(event);
+  socket.receive(socketEvent({ type: 'response.output_text.done', response_id: 'response-1', text: 'answer' })); socketDone(socket);
+  assert.equal(h.posts.filter(m => m.__xdbh === 'grok-chunk').map(m => m.text).join(''), 'answer');
+});
+
+test('WebSocket text delta and final-only variants return one answer and malformed native frames pass through', () => {
+  for (const variant of ['delta', 'final-only']) {
+    const h = hookHarness(), socket = h.socket(); arm(h);
+    for (const frame of [null, { session_id: 'session-1', event: { type: 'response.create', event_id: 'invalid' } }]) {
+      const data = JSON.stringify(frame); socket.send(data); assert.equal(socket.sent.at(-1), data);
+    }
+    socket.send(JSON.stringify(socketRequest())); socketStart(socket);
+    if (variant === 'delta') {
+      socket.receive(socketEvent({ type: 'response.output_text.delta', response_id: 'response-1', delta: 'answer' }));
+    }
+    socket.receive(socketEvent({ type: 'response.output_text.done', response_id: 'response-1', text: 'answer' })); socketDone(socket);
+    assert.equal(h.posts.filter(m => m.__xdbh === 'grok-chunk').map(m => m.text).join(''), 'answer');
+  }
+});
+
+test('WebSocket tool results supply citation sources and incomplete responses report an error', () => {
+  const h = hookHarness(), socket = h.socket(); arm(h); socket.send(JSON.stringify(socketRequest())); socketStart(socket);
+  socket.receive(socketEvent({ type: 'response.chunk', response_id: 'response-1', chunk: {
+    tool_result: { web_search: { webpages: [{ url: 'https://example.org/source', title: 'Source' }] } },
+  } }));
+  socketChunk(socket, 'partial'); socketDone(socket, 'failed');
+  assert.equal(h.posts.find(m => m.__xdbh === 'grok-sources')?.sources[0].url, 'https://example.org/source');
+  assert.ok(h.posts.some(m => m.__xdbh === 'grok-error'));
+  assert.ok(!h.posts.some(m => m.__xdbh === 'grok-done'));
 });

@@ -508,7 +508,7 @@
   function watchRequest(api, reqId) {
     api.wait(10000).then((active) => {
       if (!active || !pending || pending.reqId !== reqId || pending.started) return;
-      failRequest("没等到 Grok 响应。请确认已登录 X、Grok 可用,然后重试。");
+      failRequest("没等到 Grok 响应。请刷新 X 页面后重试;若原生 Grok 已回答,请重新加载或更新扩展。");
     });
     api.wait(120000).then((active) => {
       if (!active || !pending || pending.reqId !== reqId) return;
@@ -658,11 +658,32 @@
       let roots;
       try { roots = document.querySelectorAll(sel); } catch (_) { continue; }
       for (const root of roots) {
-        const input = root.querySelector("textarea");
+        const input = root.querySelector('textarea') || root.querySelector('[contenteditable="true"][role="textbox"]') || root.querySelector('[contenteditable="true"]');
         if (input && input.getClientRects().length && !input.closest('[hidden],[aria-hidden="true"]')) return { root, input };
       }
     }
     return null;
+  }
+
+  function drawerInputText(input) {
+    return typeof input.value === "string" ? input.value : input.innerText || input.textContent || "";
+  }
+
+  function setDrawerInput(input, text) {
+    if (typeof input.value === "string") {
+      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+      set.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    } else {
+      // 新版 Grok 使用富文本编辑器;用浏览器编辑命令触发它自己的输入处理。
+      input.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (!document.execCommand(text ? "insertText" : "delete", false, text)) throw new Error("Grok editor unavailable");
+    }
   }
 
   async function sendViaDrawer(api, message, draftOnly) {
@@ -686,12 +707,10 @@
     };
     if (!target) return unavailable("没找到 Grok 输入框,请手动打开 Grok 抽屉后重试。");
     const { root, input } = target;
-    if (input.disabled || input.readOnly) return unavailable("Grok 输入框暂不可用,请等待当前回答结束后重试。");
-    if (input.value.trim()) return unavailable("Grok 输入框里已有草稿,请先发送或清空,再重试。");
+    if (input.disabled || input.readOnly || input.getAttribute("aria-disabled") === "true" || input.getAttribute("aria-readonly") === "true") return unavailable("Grok 输入框暂不可用,请等待当前回答结束后重试。");
+    if (drawerInputText(input).trim()) return unavailable("Grok 输入框里已有草稿,请先发送或清空,再重试。");
     try {
-      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-      set.call(input, message);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      setDrawerInput(input, message);
     } catch (_) { return unavailable("未能填入 Grok 输入框,请稍后重试。"); }
     if (draftOnly) {
       input.focus();
@@ -699,14 +718,12 @@
     }
     // 取消或失败时只移除插件自己填入且尚未改变的草稿。
     const clearDraft = () => {
-      if (input.value !== message) return;
-      const set = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-      set.call(input, "");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (drawerInputText(input) !== message) return;
+      try { setDrawerInput(input, ""); } catch (_) {}
     };
     for (let tries = 0; tries < 12; tries++) {
       if (!await api.wait(150)) { clearDraft(); return false; }
-      if (input.value !== message) return unavailable("Grok 草稿已被修改,已停止自动发送,请重试。");
+      if (drawerInputText(input) !== message) return unavailable("Grok 草稿已被修改,已停止自动发送,请重试。");
       const send = Array.from(root.querySelectorAll('button,[role="button"]')).find((b) =>
         /问\s*Grok|ask\s*grok|发送|send/i.test(b.getAttribute("aria-label") || "") &&
         !b.disabled && b.getAttribute("aria-disabled") !== "true" && b.getClientRects().length
