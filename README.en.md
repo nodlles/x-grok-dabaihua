@@ -27,7 +27,7 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
 - **Continue in Grok**: prepares a draft in X’s native Grok input with the original post, explanation, sources, and completed turns for you to edit and send.
 - **Result cache**: the same tweet shows instantly; hit "Re-explain" to force a refresh.
 - **Themes**: graphite / light / ocean / neon / follow system.
-- **Hide native drawer**: moves X's own Grok drawer off-screen only while explaining; restores its original inline styles on completion, error, timeout, or card close.
+- **Hide native drawer**: hides X's own Grok drawer only while explaining, keeping its native position to prevent autofocus from scrolling the timeline to the top; restores its original inline styles on completion, error, timeout, or card close.
 
 ## Install (load unpacked)
 

@@ -51,7 +51,7 @@ class Element {
   contains(el) { return el === this || [...this.children.values()].includes(el); }
   setAttribute(k, v) { this.attrs[k] = v; }
   appendChild(el) { this.childNodes.push(el); return el; }
-  focus() { this.listeners.focus?.({}); }
+  focus(options) { (this.focusOptions ||= []).push(options); this.listeners.focus?.({}); }
   dispatchEvent() {}
   getAttribute(k) { return this.attrs[k] || null; }
   getClientRects() { return [{}]; }
@@ -66,7 +66,9 @@ function contentHarness(settings = {}, cached = null) {
   const drawer = new Element();
   drawer.style.setProperty('position', 'absolute');
   drawer.style.setProperty('left', '30px', 'important');
+  drawer.style.setProperty('top', '140px');
   drawer.style.setProperty('opacity', '0.8');
+  drawer.style.setProperty('pointer-events', 'auto', 'important');
   drawer.querySelector = () => null;
   const button = new Element(); button.attrs['aria-label'] = 'Grok';
   const tweet = new Element();
@@ -114,7 +116,7 @@ function contentHarness(settings = {}, cached = null) {
     native() { cards.at(-1).querySelector('.xdbh-native').click(); },
     drawerFallback(rich = false) {
       tweet.querySelectorAll = (sel) => sel.includes('tweetText') ? [{ innerText: 'Long article text for drawer fallback' }] : [];
-      const input = new Element(); input.attrs.placeholder = 'Ask'; input.focus = () => {}; input.dispatchEvent = () => {};
+      const input = new Element(); input.attrs.placeholder = 'Ask'; input.dispatchEvent = () => {};
       if (rich) {
         delete input.value;
         input.attrs.contenteditable = 'true'; input.attrs.role = 'textbox';
@@ -142,6 +144,7 @@ function contentHarness(settings = {}, cached = null) {
 test('native drawer stays visible outside an active explanation', async () => {
   const h = contentHarness(); await h.advance(0); await h.mutate();
   assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
 });
 
 test('closing before the delayed click disarms and prevents Grok activation', async () => {
@@ -153,12 +156,27 @@ test('closing before the delayed click disarms and prevents Grok activation', as
 
 test('closing restores original inline styles and later mutations cannot hide drawer', async () => {
   const h = contentHarness(); await h.hover(); await h.advance(150);
-  assert.equal(h.drawer.style.getPropertyValue('left'), '-99999px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0');
+  assert.equal(h.drawer.style.getPropertyValue('pointer-events'), 'none');
   h.close(); await h.mutate(); await h.advance(4000);
   assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
   assert.equal(h.drawer.style.getPropertyPriority('left'), 'important');
   assert.equal(h.drawer.style.getPropertyValue('position'), 'absolute');
   assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
+  assert.equal(h.drawer.style.getPropertyPriority('opacity'), '');
+  assert.equal(h.drawer.style.getPropertyValue('pointer-events'), 'auto');
+  assert.equal(h.drawer.style.getPropertyPriority('pointer-events'), 'important');
+});
+
+test('hiding the native drawer preserves its geometry for X autofocus', async () => {
+  const h = contentHarness(); await h.hover(); await h.advance(150); await h.mutate();
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0');
+  assert.equal(h.drawer.style.getPropertyValue('position'), 'absolute');
+  assert.equal(h.drawer.style.getPropertyPriority('position'), '');
+  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyPriority('left'), 'important');
+  assert.equal(h.drawer.style.getPropertyValue('top'), '140px');
+  assert.equal(h.drawer.style.getPropertyPriority('top'), '');
 });
 
 test('redo supersedes the earlier delayed click and ignores its response', async () => {
@@ -172,7 +190,7 @@ test('redo supersedes the earlier delayed click and ignores its response', async
   h.message({ __xdbh: 'grok-done', reqId: current.reqId });
   assert.equal(h.cards.at(-1).querySelector('.xdbh-text').innerHTML, 'current');
   assert.equal(h.writes.length, 1);
-  await h.mutate(); assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  await h.mutate(); assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
 });
 
 test('disable and mode changes cancel delayed actions', async () => {
@@ -197,7 +215,7 @@ test('a started but stalled response times out and restores drawer', async () =>
   h.message({ __xdbh: 'grok-start', reqId: h.arm().reqId });
   await h.advance(120000);
   assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /超时/);
-  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
 });
 
 test('closing before animation frame does not access a removed card', async () => {
@@ -208,7 +226,7 @@ test('cached results never hide the native drawer or activate Grok', async () =>
   const h = contentHarness({}, { raw: 'cached', sources: [] }); await h.hover(); await h.mutate();
   assert.equal(h.arm(), undefined);
   assert.equal(h.cards.at(-1).querySelector('.xdbh-text').innerHTML, 'cached');
-  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
 });
 
 function hookHarness(fetchImpl) {
@@ -315,8 +333,10 @@ test('closing during streaming cancels only the extension reader', async () => {
 
 test('disabling drawer hiding mid-request restores immediately and stays restored', async () => {
   const h = contentHarness(); await h.hover(); await h.advance(300);
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0');
   h.change({ hideDrawer: false }); await h.mutate();
-  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
+  assert.equal(h.drawer.style.getPropertyValue('pointer-events'), 'auto');
 });
 
 test('closing a demo run stops its pending output', async () => {
@@ -337,7 +357,7 @@ test('first-response timeout disarms the hook and restores the native drawer', a
   const h = contentHarness(); await h.hover(); const reqId = h.arm().reqId;
   await h.advance(10500);
   assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /没等到/);
-  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
   assert.ok(h.messages.some((d) => d.__xdbh === 'disarm' && d.reqId === reqId));
 });
 
@@ -407,7 +427,7 @@ test('native handoff fills contextual draft, preserves card, and never auto-send
   await h.hover(); h.question('native question'); h.native(); await h.advance(500);
   assert.match(input.value, /cached explanation/); assert.match(input.value, /native question/);
   assert.equal(send.clicks || 0, 0); assert.equal(h.arm(), undefined);
-  assert.equal(h.drawer.style.getPropertyValue('left'), '30px');
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
   assert.equal(h.cards[0].querySelector('.xdbh-question').value, 'native question');
 });
 
@@ -553,6 +573,29 @@ test('new contenteditable Grok input supports followup sends and draft-only nati
     assert.match(input.textContent, /cached explanation/); assert.match(input.textContent, /new question/);
     assert.equal(send.clicks || 0, native ? 0 : 1);
   }
+});
+
+test('native draft handoff and rich editor followup focus never request page scrolling', async () => {
+  for (const [rich, native] of [[false, true], [true, true], [true, false]]) {
+    const h = contentHarness({}, { raw: 'cached explanation', sources: [] });
+    const { input } = h.drawerFallback(rich);
+    await h.hover(); h.question('next question');
+    if (native) h.native(); else h.submit();
+    await h.advance(500);
+    assert.ok(input.focusOptions.length > 0);
+    assert.ok(input.focusOptions.every(options => options?.preventScroll === true));
+  }
+});
+
+test('clearing a cancelled rich editor draft preserves scroll during cleanup', async () => {
+  const h = contentHarness({}, { raw: 'cached explanation', sources: [] });
+  const { input, send } = h.drawerFallback(true);
+  await h.hover(); h.question('next question'); h.submit(); await h.advance(130);
+  h.close(); await h.advance(500);
+  assert.equal(input.textContent, '');
+  assert.equal(send.clicks || 0, 0);
+  assert.equal(input.focusOptions.length, 2);
+  assert.ok(input.focusOptions.every(options => options?.preventScroll === true));
 });
 
 test('contenteditable Grok input preserves existing or edited drafts and clears only cancelled extension drafts', async () => {

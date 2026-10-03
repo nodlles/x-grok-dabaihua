@@ -676,7 +676,7 @@
       input.dispatchEvent(new Event("input", { bubbles: true }));
     } else {
       // 新版 Grok 使用富文本编辑器;用浏览器编辑命令触发它自己的输入处理。
-      input.focus();
+      input.focus({ preventScroll: true });
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(input);
@@ -713,7 +713,7 @@
       setDrawerInput(input, message);
     } catch (_) { return unavailable("未能填入 Grok 输入框,请稍后重试。"); }
     if (draftOnly) {
-      input.focus();
+      input.focus({ preventScroll: true });
       return true;
     }
     // 取消或失败时只移除插件自己填入且尚未改变的草稿。
@@ -781,7 +781,8 @@
   });
 
   // ---------- 隐藏 X 自己的 Grok 抽屉 ----------
-  // 用「移到屏幕外」而非关闭,避免取消正在进行的流式请求。
+  // 保留抽屉的原生位置,只隐藏显示和指针交互。X 会自动聚焦其中的输入框;
+  // 移到负坐标会让浏览器为显示焦点而把时间线滚回顶部。
   const DRAWER_SELECTORS = [
     '[data-testid="GrokDrawer"]',
     '[data-testid*="GrokDrawer"]',
@@ -810,13 +811,10 @@
         if (n.closest(".xdbh-card")) return; // 别误伤自己
         if (hiddenDrawers.has(n)) { hit++; return; }
         const original = {};
-        for (const prop of ["position", "left", "top", "opacity", "pointer-events"]) {
+        for (const prop of ["opacity", "pointer-events"]) {
           original[prop] = [n.style.getPropertyValue(prop), n.style.getPropertyPriority(prop)];
         }
         hiddenDrawers.set(n, original);
-        n.style.setProperty("position", "fixed", "important");
-        n.style.setProperty("left", "-99999px", "important");
-        n.style.setProperty("top", "-99999px", "important");
         n.style.setProperty("opacity", "0", "important");
         n.style.setProperty("pointer-events", "none", "important");
         hit++;
@@ -825,7 +823,7 @@
     return hit;
   }
 
-  // 关卡片时把被移到屏幕外的原生 Grok 抽屉复位,否则用户之后用不了 X 自己的 Grok
+  // 解读结束或关卡片时恢复原生抽屉的显示和交互。
   function restoreGrokDrawers() {
     hiddenDrawers.forEach((original, n) => {
       for (const [prop, [value, priority]] of Object.entries(original)) {
