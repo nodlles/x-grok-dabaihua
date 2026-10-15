@@ -36,7 +36,18 @@ function clock() {
 class Element {
   constructor() {
     this.dataset = {}; this.children = new Map(); this.listeners = {}; this.textContent = ''; this.value = ''; this.childNodes = [];
-    this.classList = { add() {} }; this.connected = true; this.attrs = {};
+    const classes = new Set();
+    this.classList = {
+      add: (name) => classes.add(name),
+      remove: (name) => classes.delete(name),
+      contains: (name) => classes.has(name),
+      toggle: (name, force) => {
+        const next = force === undefined ? !classes.has(name) : !!force;
+        if (next) classes.add(name); else classes.delete(name);
+        return next;
+      },
+    };
+    this.connected = true; this.attrs = {};
     const values = new Map();
     this.style = {
       setProperty: (k, v, p = '') => values.set(k, [v, p]),
@@ -62,7 +73,7 @@ class Element {
 }
 
 function contentHarness(settings = {}, cached = null) {
-  const timers = clock(), events = {}, messages = [], cards = [], writes = [];
+  const timers = clock(), events = {}, messages = [], cards = [], writes = [], ports = [];
   const drawer = new Element();
   drawer.style.setProperty('position', 'absolute');
   drawer.style.setProperty('left', '30px', 'important');
@@ -90,7 +101,21 @@ function contentHarness(settings = {}, cached = null) {
     postMessage: (d) => messages.push(d),
   };
   const chrome = {
-    runtime: { id: 'extension' },
+    runtime: {
+      id: 'extension',
+      connect(info) {
+        const port = {
+          name: info && info.name, sent: [], listeners: {},
+          onMessage: { addListener: (fn) => { port.listeners.message = fn; } },
+          onDisconnect: { addListener: (fn) => { port.listeners.disconnect = fn; } },
+          postMessage(message) { port.sent.push(message); },
+          disconnect() { port.disconnected = true; port.listeners.disconnect?.(); },
+          push(message) { port.listeners.message?.(message); },
+        };
+        ports.push(port);
+        return port;
+      },
+    },
     storage: {
       local: { get(key, cb) { timers.setTimeout(() => cb(key === 'settings' ? { settings } : {}), 0); }, set: (v) => writes.push(v) },
       onChanged: { addListener: (fn) => { change = fn; } },
@@ -102,10 +127,11 @@ function contentHarness(settings = {}, cached = null) {
     resolveTheme: (t) => t, positionCard() {}, clampCard() {}, makeDraggable() {},
     getCache: () => cached, saveCache: (url, data) => writes.push({ url, ...data }), xdbhRenderRich: (raw) => raw,
   });
+  vm.runInContext(source('aiconfig.js'), context);
   vm.runInContext(source('conversation.js'), context);
   vm.runInContext(source('content.js'), context);
   return {
-    ...timers, drawer, button, tweet, messages, cards, writes, document,
+    ...timers, drawer, button, tweet, messages, cards, writes, ports, document,
     async hover() { await timers.advance(0); events.mouseover({ target: tweet }); await timers.advance(1200); },
     async mutate() { observer(); await timers.advance(16); },
     invalidate() { chrome.runtime.id = null; },
@@ -138,6 +164,93 @@ function contentHarness(settings = {}, cached = null) {
     change(value) { settings = { ...settings, ...value }; change({ settings: { newValue: settings } }); },
     message(d) { events['window:message']({ source: window, data: d }); },
     arm() { return messages.filter((d) => d.__xdbh === 'arm').at(-1); },
+  };
+}
+
+// 设置页：按 id 惰性造 stub 元素，够 options.js 跑完初始化与各控件回调。
+function optionsHarness(options = {}) {
+  const timers = clock(), elements = new Map(), writes = [], posts = [], clipboardText = [];
+  const requestedOrigins = [];
+  const state = {
+    settings: options.settings ?? {},
+    captures: options.captures ?? [],
+    granted: options.granted !== false,
+    testReply: options.testReply ?? { ok: true },
+    lastError: null,
+    onChanged: null,
+  };
+  const el = (id) => {
+    if (!elements.has(id)) { const node = new Element(); node.id = id; elements.set(id, node); }
+    return elements.get(id);
+  };
+  const document = { getElementById: el, createElement: () => new Element(), addEventListener() {} };
+  const context = vm.createContext({
+    document,
+    navigator: { clipboard: { writeText: (text) => { clipboardText.push(text); return Promise.resolve(); } } },
+    console: { log() {}, warn() {} },
+    ...timers, URL,
+    chrome: {
+      storage: {
+        local: {
+          get(key, cb) { timers.setTimeout(() => cb(key === 'captures' ? { captures: state.captures } : { settings: state.settings }), 0); },
+          set(value, cb) { writes.push(value); if (cb) timers.setTimeout(cb, 0); },
+        },
+        onChanged: { addListener: (fn) => { state.onChanged = fn; } },
+      },
+      permissions: { request: (request) => { requestedOrigins.push(request); return Promise.resolve(state.granted); } },
+      runtime: {
+        sendMessage(message, cb) { posts.push(message); if (cb) timers.setTimeout(() => cb(state.testReply), 0); },
+        get lastError() { return state.lastError; },
+      },
+    },
+  });
+  vm.runInContext(source('aiconfig.js'), context);
+  vm.runInContext(source('options.js'), context);
+  const values = (id) => Array.from(el(id).childNodes, (node) => node.value);
+  const labels = (id) => Array.from(el(id).childNodes, (node) => node.textContent);
+  const last = () => writes.at(-1).settings;
+  const expert = (id) => last().experts.find((item) => item.id === id);
+  const service = (id) => last().services.find((item) => item.id === id);
+  return {
+    ...timers, el, writes, posts, clipboardText, requestedOrigins, state, values, labels, last, expert, service,
+    async load() { await timers.advance(0); },
+    pick(id, value) { el(id).value = value; el(id).onchange({ target: el(id) }); },
+  };
+}
+
+// 工具栏弹窗：只造 stub 元素加一个可观察的 body，够 popup.js 跑完初始化与开关回调。
+function popupHarness(options = {}) {
+  const timers = clock(), elements = new Map(), writes = [];
+  const state = { settings: options.settings ?? {}, opened: 0, closed: 0 };
+  const el = (id) => {
+    if (!elements.has(id)) { const node = new Element(); node.id = id; elements.set(id, node); }
+    return elements.get(id);
+  };
+  const body = new Element();
+  const document = { getElementById: el, body };
+  const context = vm.createContext({
+    document,
+    console: { log() {}, warn() {} },
+    ...timers,
+    window: { close() { state.closed += 1; } },
+    chrome: {
+      storage: {
+        local: {
+          get(key, cb) { timers.setTimeout(() => cb({ settings: state.settings }), 0); },
+          set(value, cb) { writes.push(value); if (cb) timers.setTimeout(cb, 0); },
+        },
+      },
+      runtime: {
+        getManifest: () => ({ version: '0.4.0' }),
+        openOptionsPage() { state.opened += 1; },
+      },
+    },
+  });
+  vm.runInContext(source('aiconfig.js'), context);
+  vm.runInContext(source('popup.js'), context);
+  return {
+    ...timers, el, body, writes, state,
+    async load() { await timers.advance(0); },
   };
 }
 
@@ -525,6 +638,52 @@ const socketDone = (socket, status = 'completed') => socket.receive(socketEvent(
   type: 'response.done', response: { id: 'response-1', status },
 }));
 
+test('initial WebSocket explanations request quick answers without changing native sessions or followups', () => {
+  const h = hookHarness(), socket = h.socket();
+  const session = JSON.stringify({ session_id: 'session-1', event: { type: 'session.create', session: { model: 'auto' } } });
+  arm(h); socket.send(session); socket.send(JSON.stringify(socketRequest()));
+  assert.equal(socket.sent[0], session);
+  assert.equal(JSON.parse(socket.sent[1]).event.steer_action, 'quick_answer');
+  socketStart(socket); socketChunk(socket, 'answer'); socketDone(socket);
+  h.message({ __xdbh: 'arm', reqId: 'followup', followup: true, message: 'explain deeply' });
+  const followup = socketRequest('explain deeply'); followup.event.steer_action = 'think_harder';
+  socket.send(JSON.stringify(followup));
+  assert.equal(JSON.parse(socket.sent.at(-1)).event.steer_action, 'think_harder');
+});
+
+test('complete text explanations avoid URL fetching while incomplete content retains its source', async () => {
+  for (const complete of [true, false]) {
+    const h = hookHarness(), socket = h.socket();
+    h.message({ __xdbh: 'arm', reqId: 'r1', prompt: 'plain', tweetText: 'original text', textComplete: complete, tweetUrl: 'https://x.com/a/status/1' });
+    socket.send(JSON.stringify(socketRequest()));
+    const text = JSON.parse(socket.sent[0]).event.item.content[0].text;
+    assert.match(text, /original text/);
+    assert.equal(text.includes('https://x.com/a/status/1'), !complete);
+    if (complete) assert.match(text, /不要搜索/);
+    const legacy = hookHarness();
+    legacy.message({ __xdbh: 'arm', reqId: 'r1', prompt: 'plain', tweetText: 'original text', textComplete: complete });
+    await fetchGrok(legacy); await settle();
+    assert.equal(JSON.parse(legacy.requests[0].init.body).responses[0].message.includes('https://x.com/a/status/1'), !complete);
+  }
+});
+
+test('only complete plain tweets with the default prompt take the text-only path', async () => {
+  for (const scenario of ['plain', 'media', 'collapsed', 'article', 'quoted-article', 'link-card', 'custom']) {
+    const h = contentHarness(scenario === 'custom' ? { prompt: 'Search and verify this claim' } : {});
+    const query = h.tweet.querySelector.bind(h.tweet);
+    const blocker = { media: 'tweetPhoto', collapsed: 'tweet-text-show-more-link', 'quoted-article': 'article-cover-image', 'link-card': 'card.wrapper' }[scenario];
+    if (blocker) {
+      h.tweet.querySelector = (sel) => sel.includes(blocker) ? new Element() : query(sel);
+    }
+    if (scenario === 'article') {
+      const all = h.tweet.querySelectorAll;
+      h.tweet.querySelectorAll = sel => sel.includes('tweetText') ? [] : all(sel);
+    }
+    await h.hover();
+    assert.equal(h.arm().textComplete, scenario === 'plain', scenario);
+  }
+});
+
 test('Grok WebSocket requests on an existing socket are rewritten and streamed to the card', () => {
   const h = hookHarness(), socket = h.socket(), original = socketRequest();
   socket.send(JSON.stringify({ event: { type: 'ping' } }));
@@ -655,4 +814,496 @@ test('WebSocket tool results supply citation sources and incomplete responses re
   assert.equal(h.posts.find(m => m.__xdbh === 'grok-sources')?.sources[0].url, 'https://example.org/source');
   assert.ok(h.posts.some(m => m.__xdbh === 'grok-error'));
   assert.ok(!h.posts.some(m => m.__xdbh === 'grok-done'));
+});
+
+/* ==================== 第三方 API 模式 ==================== */
+
+// aiconfig.js 是纯函数模块，单独起一个上下文就能直接调。
+function configContext() {
+  const context = vm.createContext({ URL, console: { log() {} } });
+  vm.runInContext(source('aiconfig.js'), context);
+  return context;
+}
+
+function apiService(overrides = {}) {
+  return Object.assign({
+    id: 'xai',
+    name: 'xAI Grok',
+    apiUrl: 'https://api.x.ai/v1/chat/completions',
+    apiKey: 'test-key',
+    model: 'grok-3-mini',
+    temperature: 0.3,
+  }, overrides);
+}
+
+function streamResponse(chunks, init = {}) {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(body, Object.assign({ status: 200, headers: { 'content-type': 'text/event-stream' } }, init));
+}
+
+function backgroundHarness(fetchImpl) {
+  const listeners = {}, requests = [];
+  const chrome = {
+    runtime: {
+      onConnect: { addListener: (fn) => { listeners.connect = fn; } },
+      onMessage: { addListener: (fn) => { listeners.message = fn; } },
+    },
+  };
+  const context = vm.createContext({
+    chrome, importScripts() {}, console: { log() {} }, URL,
+    fetch: (url, init) => { requests.push({ url, init }); return fetchImpl(url, init); },
+    setTimeout, clearTimeout, AbortController, TextDecoder, TextEncoder, Response, ReadableStream,
+  });
+  vm.runInContext(source('aiconfig.js'), context);
+  vm.runInContext(source('background.js'), context);
+  return {
+    requests,
+    port(name = 'xdbh-api') {
+      const port = {
+        name, sent: [], listeners: {},
+        onMessage: { addListener: (fn) => { port.listeners.message = fn; } },
+        onDisconnect: { addListener: (fn) => { port.listeners.disconnect = fn; } },
+        postMessage: (message) => port.sent.push(message),
+        disconnect() { port.disconnected = true; port.listeners.disconnect?.(); },
+        start(message) { port.listeners.message?.(message); },
+      };
+      listeners.connect(port);
+      return port;
+    },
+    message(message, sendResponse) { return listeners.message(message, {}, sendResponse); },
+  };
+}
+
+test('prompt templates fill known placeholders, keep unknown ones, and append raw legacy prompts', () => {
+  const c = configContext();
+  const vars = { text: '正文', url: 'https://x.com/a/status/1', author: '张三', handle: '@zhangsan', expert: '大白话' };
+  assert.equal(c.xdbhRenderTemplate('解释:{{text}}', vars), '解释:正文');
+  assert.equal(c.xdbhRenderTemplate('{{author}} {{handle}} 说了 {{text}}', vars), '张三 @zhangsan 说了 正文');
+  assert.equal(c.xdbhRenderTemplate('{{nope}} {{text}}', vars), '{{nope}} 正文');
+  assert.equal(c.xdbhRenderTemplate('只解释这段:', vars), '只解释这段:\n\n正文');
+  // 主世界会自己追加正文，所以 Grok 模式渲染时把 {{text}} 置空。
+  assert.equal(c.xdbhRenderTemplate('解释:{{text}}', { text: '' }), '解释:');
+});
+
+test('service registry keeps preset defaults, applies user edits, and reports what is missing', () => {
+  const c = configContext();
+  const list = c.xdbhNormalizeServices([
+    { id: 'xai', apiKey: 'k1' },
+    { id: 'mine', name: '自建网关', apiUrl: 'https://gw.example.com/v1/chat/completions', model: 'm', apiKey: 'k2' },
+  ]);
+  const xai = list.find((s) => s.id === 'xai');
+  assert.equal(xai.apiUrl, 'https://api.x.ai/v1/chat/completions');
+  assert.equal(xai.apiKey, 'k1');
+  assert.equal(xai.model, 'grok-3-mini');
+  assert.equal(list.length, 9);
+  assert.equal(list.at(-1).name, '自建网关');
+  assert.equal(c.xdbhServiceReady(xai), '');
+  assert.equal(c.xdbhServiceReady(list.find((s) => s.id === 'openai')), '还没填 API Key');
+  assert.equal(c.xdbhServiceReady({ apiUrl: 'http://localhost:11434/v1/chat/completions', model: 'llama3.1', apiKey: '' }), '');
+  assert.equal(c.xdbhServiceReady({ apiUrl: 'https://a.example.com', model: '', apiKey: 'k' }), '还没填模型名');
+  assert.equal(c.xdbhServiceReady({ apiUrl: '', model: 'm', apiKey: 'k' }), '还没填接口地址');
+  assert.equal(c.xdbhOriginPattern('https://api.x.ai/v1/chat/completions'), 'https://api.x.ai/*');
+  assert.equal(c.xdbhOriginPattern('不是一个网址'), '');
+});
+
+test('settings migration only moves a customized legacy prompt to the custom expert', () => {
+  const c = configContext();
+  const untouched = c.xdbhNormalizeSettings({ prompt: '用大白话、口语化的中文解释下面这条推文在讲什么,必要时补一句背景。别复述原文,直接说人话:' });
+  assert.equal(untouched.activeExpertId, 'plain');
+  const edited = c.xdbhNormalizeSettings({ prompt: '用东北话解释:' });
+  assert.equal(edited.activeExpertId, 'custom');
+  assert.equal(edited.prompt, '用东北话解释:');
+  assert.equal(edited.experts.find((e) => e.id === 'custom').prompt, '用东北话解释:');
+  const chosen = c.xdbhNormalizeSettings({ activeExpertId: 'tech' });
+  assert.equal(chosen.prompt, c.xdbhActiveExpert(chosen).prompt);
+  assert.match(chosen.prompt, /技术点/);
+  assert.equal(c.xdbhActiveService(c.xdbhNormalizeSettings({ activeServiceId: 'deepseek' })).id, 'deepseek');
+  assert.equal(c.xdbhActiveExpert(c.xdbhNormalizeSettings({ activeExpertId: '不存在' })).id, 'plain');
+});
+
+test('api followup messages carry the system prompt, first answer and completed turns only', () => {
+  const context = vm.createContext({ console: { log() {} } });
+  vm.runInContext(source('conversation.js'), context);
+  const messages = context.xdbhApiMessages({
+    system: 'sys', initialPrompt: 'first', initialAnswer: 'answer',
+    turns: [{ state: 'done', question: 'q1', raw: 'a1' }, { state: 'pending', question: 'q2', raw: '' }],
+    question: 'q3',
+  });
+  assert.deepEqual(Array.from(messages, (m) => m.role), ['system', 'user', 'assistant', 'user', 'assistant', 'user']);
+  assert.deepEqual(Array.from(messages, (m) => m.content), ['sys', 'first', 'answer', 'q1', 'a1', 'q3']);
+  assert.throws(() => context.xdbhApiMessages({ question: '   ' }), /请输入/);
+  assert.throws(() => context.xdbhApiMessages({ question: 'x'.repeat(2001) }), /2000/);
+  assert.throws(() => context.xdbhApiMessages({ question: 'ok', initialAnswer: 'x'.repeat(60001) }), /60000/);
+});
+
+test('background streams OpenAI-style SSE deltas, sends the bearer token, and finishes once', async () => {
+  const h = backgroundHarness(() => Promise.resolve(streamResponse([
+    'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"好"}}]}\n\ndata: [DONE]\n\n',
+  ])));
+  const port = h.port();
+  port.start({ type: 'start', service: apiService(), messages: [{ role: 'user', content: 'hi' }] });
+  await settle();
+  assert.deepEqual(port.sent.filter((m) => m.type === 'chunk').map((m) => m.text), ['你', '好']);
+  assert.equal(port.sent.filter((m) => m.type === 'done').length, 1);
+  assert.equal(port.sent.some((m) => m.type === 'error'), false);
+  const body = JSON.parse(h.requests[0].init.body);
+  assert.equal(body.stream, true);
+  assert.equal(body.model, 'grok-3-mini');
+  assert.equal(body.messages[0].content, 'hi');
+  assert.equal(h.requests[0].url, 'https://api.x.ai/v1/chat/completions');
+  assert.equal(h.requests[0].init.headers.Authorization, 'Bearer test-key');
+});
+
+test('background surfaces HTTP failures as readable errors and never reports done', async () => {
+  const h = backgroundHarness(() => Promise.resolve(new Response(
+    JSON.stringify({ error: { message: 'bad key' } }),
+    { status: 401, headers: { 'content-type': 'application/json' } },
+  )));
+  const port = h.port();
+  port.start({ type: 'start', service: apiService(), messages: [] });
+  await settle();
+  const error = port.sent.find((m) => m.type === 'error');
+  assert.match(error.error, /API Key 无效/);
+  assert.match(error.error, /bad key/);
+  assert.equal(port.sent.some((m) => m.type === 'done'), false);
+});
+
+test('background falls back to a plain JSON answer when the gateway does not stream', async () => {
+  const h = backgroundHarness(() => Promise.resolve(new Response(
+    JSON.stringify({ choices: [{ message: { content: '完整回答' } }] }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  )));
+  const port = h.port();
+  port.start({ type: 'start', service: apiService(), messages: [] });
+  await settle();
+  assert.equal(port.sent.find((m) => m.type === 'chunk').text, '完整回答');
+  assert.equal(port.sent.filter((m) => m.type === 'done').length, 1);
+});
+
+test('background aborts the upstream request when the content script disconnects', async () => {
+  let signal;
+  const h = backgroundHarness((_url, init) => {
+    signal = init.signal;
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+    });
+  });
+  const port = h.port();
+  port.start({ type: 'start', service: apiService(), messages: [] });
+  await settle();
+  assert.equal(signal.aborted, false);
+  port.disconnect();
+  assert.equal(signal.aborted, true);
+  await settle();
+  assert.match(port.sent.find((m) => m.type === 'error').error, /中止/);
+});
+
+test('background refuses to call an unconfigured service or a stray port name', async () => {
+  const h = backgroundHarness(() => { throw new Error('must not fetch'); });
+  const port = h.port();
+  port.start({ type: 'start', service: { apiUrl: '', model: '', apiKey: '' }, messages: [] });
+  await settle();
+  assert.match(port.sent.find((m) => m.type === 'error').error, /接口地址/);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.port('other').sent.length, 0);
+});
+
+test('the settings-page connection test reports success and failure without touching the card', async () => {
+  const ok = backgroundHarness(() => Promise.resolve(new Response(
+    JSON.stringify({ choices: [{ message: { content: 'pong' } }] }),
+    { status: 200, headers: { 'content-type': 'application/json' } },
+  )));
+  let success;
+  assert.equal(ok.message({ type: 'xdbh-api-test', service: apiService() }, (r) => { success = r; }), true);
+  await settle();
+  assert.equal(success.ok, true);
+
+  const bad = backgroundHarness(() => Promise.resolve(new Response('nope', { status: 500 })));
+  let failure;
+  bad.message({ type: 'xdbh-api-test', service: apiService() }, (r) => { failure = r; });
+  await settle();
+  assert.equal(failure.ok, false);
+  assert.match(failure.error, /HTTP 500/);
+
+  const unconfigured = backgroundHarness(() => { throw new Error('must not fetch'); });
+  let missing;
+  unconfigured.message({ type: 'xdbh-api-test', service: { apiUrl: '', model: 'm', apiKey: 'k' } }, (r) => { missing = r; });
+  assert.equal(missing.ok, false);
+  assert.equal(unconfigured.requests.length, 0);
+});
+
+test('api mode explains what is missing instead of firing a request', async () => {
+  const h = contentHarness({ mode: 'api' });
+  await h.hover();
+  assert.equal(h.ports.length, 0);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /API Key/);
+});
+
+test('api mode renders the expert template and streams the backend answer into the card', async () => {
+  const h = contentHarness({ mode: 'api', activeServiceId: 'xai', services: [{ id: 'xai', apiKey: 'k' }] });
+  await h.hover();
+  const port = h.ports.at(-1);
+  assert.equal(port.name, 'xdbh-api');
+  assert.equal(port.sent[0].type, 'start');
+  assert.equal(port.sent[0].service.apiUrl, 'https://api.x.ai/v1/chat/completions');
+  assert.equal(port.sent[0].messages[0].role, 'system');
+  assert.match(port.sent[0].messages[1].content, /A sufficiently long original tweet/);
+  port.push({ type: 'start' });
+  port.push({ type: 'chunk', text: '答' });
+  port.push({ type: 'chunk', text: '案' });
+  assert.equal(h.cards.at(-1).querySelector('.xdbh-text').innerHTML, '答案');
+  port.push({ type: 'done' });
+  await h.advance(0);
+  assert.deepEqual(h.writes.filter((w) => w.raw).map((w) => w.raw), ['答案']);
+  // 第三方模式不碰 X 自己的 Grok 抽屉
+  assert.equal(h.drawer.style.getPropertyValue('opacity'), '0.8');
+  assert.equal(h.button.clicks || 0, 0);
+});
+
+test('api mode reports backend errors in the card and keeps the thread clean', async () => {
+  const h = contentHarness({ mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] });
+  await h.hover();
+  h.ports.at(-1).push({ type: 'error', error: '触发限流或额度不足（HTTP 429）' });
+  await h.advance(0);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-text').textContent, /HTTP 429/);
+  assert.equal(h.writes.length, 0);
+});
+
+test('api followups send a real multi-turn message array instead of a JSON blob', async () => {
+  const h = contentHarness({ mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] });
+  await h.hover();
+  const first = h.ports.at(-1);
+  first.push({ type: 'start' });
+  first.push({ type: 'chunk', text: '初次解读' });
+  first.push({ type: 'done' });
+  await h.advance(0);
+  h.question('为什么?');
+  h.submit();
+  await h.advance(0);
+  const messages = h.ports.at(-1).sent[0].messages;
+  assert.deepEqual(Array.from(messages, (m) => m.role), ['system', 'user', 'assistant', 'user']);
+  assert.equal(messages[2].content, '初次解读');
+  assert.equal(messages[3].content, '为什么?');
+  // 追问走后台 API，不再驱动原生抽屉
+  assert.equal(h.messages.some((m) => m.__xdbh === 'arm'), false);
+});
+
+test('closing the card aborts the in-flight api request', async () => {
+  const h = contentHarness({ mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] });
+  await h.hover();
+  const port = h.ports.at(-1);
+  assert.equal(port.disconnected, undefined);
+  h.close();
+  assert.equal(port.disconnected, true);
+});
+
+test('switching the expert inside the card re-runs with that expert and persists the choice', async () => {
+  const h = contentHarness({ mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] });
+  await h.hover();
+  const select = h.cards.at(-1).querySelector('.xdbh-expert');
+  select.value = 'tech';
+  select.onchange();
+  await h.advance(0);
+  const port = h.ports.at(-1);
+  assert.match(port.sent[0].messages[1].content, /技术点/);
+  assert.equal(h.writes.some((w) => w.settings && w.settings.activeExpertId === 'tech'), true);
+  assert.equal(h.cards.at(-1).connected, true);
+});
+
+test('expert selection also drives the Grok prompt without duplicating the tweet text', async () => {
+  const h = contentHarness({ mode: 'grok', activeExpertId: 'summary' });
+  await h.hover();
+  const arm = h.arm();
+  assert.match(arm.prompt, /3 到 5 条短句/);
+  assert.match(arm.prompt, /【原文】/);
+  assert.ok(!arm.prompt.includes('{{text}}'));
+  // 正文完整且该专家不要求读原帖 → 让 Grok 只解释这段文字
+  assert.equal(arm.textComplete, true);
+  // 「自定义」专家保留旧行为：始终带上原帖链接，允许模型自己去查
+  const custom = contentHarness({ mode: 'grok', activeExpertId: 'custom' });
+  await custom.hover();
+  assert.equal(custom.arm().textComplete, false);
+  const defaults = contentHarness();
+  await defaults.hover();
+  assert.equal(defaults.arm().textComplete, true);
+});
+
+test('settings page lists the built-in services and experts without asking for permissions', async () => {
+  const h = optionsHarness();
+  await h.load();
+  assert.equal(h.el('enabled').checked, true);
+  assert.equal(h.requestedOrigins.length, 0);
+  assert.ok(h.values('serviceSelect').includes('xai'));
+  assert.ok(h.values('serviceSelect').includes('ollama'));
+  assert.ok(h.values('serviceSelect').includes('custom'));
+  assert.deepEqual(h.values('expertSelect'), ['plain', 'tech', 'translate', 'summary', 'critique', 'custom']);
+  assert.equal(h.el('expertSelect').value, 'plain');
+  assert.match(h.el('expertPrompt').value, /大白话/);
+  assert.match(h.el('promptPreview').textContent, /这里会自动填入推文正文/);
+  // 学习模式的捕获开关默认关闭
+  assert.equal(h.el('capture').checked, false);
+});
+
+test('choosing an expert persists it and moves the derived prompt with it', async () => {
+  const h = optionsHarness();
+  await h.load();
+  h.pick('expertSelect', 'tech');
+  await h.load();
+  assert.equal(h.last().activeExpertId, 'tech');
+  assert.equal(h.last().prompt, h.expert('tech').prompt);
+  assert.match(h.last().prompt, /技术点/);
+  assert.equal(h.el('expertPrompt').value, h.expert('tech').prompt);
+  assert.ok(h.el('m-api').classList.contains('on') === false);
+});
+
+test('editing the expert prompt updates the preview and saving can restore the default', async () => {
+  const h = optionsHarness();
+  await h.load();
+  const input = h.el('expertPrompt');
+  input.value = '只讲结论,别废话:{{text}}';
+  input.oninput({ target: input });
+  await h.load();
+  assert.equal(h.last().prompt, '只讲结论,别废话:{{text}}');
+  assert.equal(h.expert('plain').prompt, '只讲结论,别废话:{{text}}');
+  assert.equal(h.el('promptPreview').textContent, '只讲结论,别废话:（这里会自动填入推文正文）');
+  h.el('expertReset').click();
+  await h.load();
+  assert.match(h.last().prompt, /大白话/);
+  assert.match(h.el('promptPreview').textContent, /大白话/);
+});
+
+test('adding a service saves it, authorizes its origin and reports the connection test', async () => {
+  const h = optionsHarness();
+  await h.load();
+  h.el('svcAdd').click();
+  await h.load();
+  const id = h.last().activeServiceId;
+  assert.ok(!['xai', 'openai', 'custom'].includes(id));
+  h.el('svcName').value = '我的中转';
+  h.el('svcUrl').value = 'https://api.example.com/v1/chat/completions';
+  h.el('svcKey').value = 'sk-test';
+  h.el('svcModel').value = 'gpt-x';
+  h.el('svcModel').oninput();
+  h.el('svcSave').click();
+  await h.load();
+  assert.equal(h.service(id).name, '我的中转');
+  assert.equal(h.service(id).apiUrl, 'https://api.example.com/v1/chat/completions');
+  // origins 数组在 vm 领域里创建，跨领域 deepEqual 会挂，转成本地数组再比。
+  assert.deepEqual(Array.from(h.requestedOrigins.at(-1).origins), ['https://api.example.com/*']);
+  assert.equal(h.el('svcNote').className, 'note ok');
+  h.el('svcTest').click();
+  await h.load();
+  assert.equal(h.posts.at(-1).type, 'xdbh-api-test');
+  assert.equal(h.posts.at(-1).service.id, id);
+  assert.equal(h.el('svcNote').className, 'note ok');
+});
+
+test('the connection test surfaces a failing gateway and refuses to test an unfinished service', async () => {
+  const h = optionsHarness({ testReply: { ok: false, error: 'API Key 无效或没有权限（HTTP 401）' }, granted: false });
+  await h.load();
+  h.pick('serviceSelect', 'custom');
+  await h.load();
+  h.el('svcUrl').value = 'https://api.example.com/v1/chat/completions';
+  h.el('svcUrl').oninput();
+  h.el('svcModel').value = 'gpt-x';
+  h.el('svcModel').oninput();
+  h.el('svcTest').click();
+  await h.load();
+  assert.equal(h.posts.length, 0); // 没填 Key，连后台都不该打扰
+  assert.match(h.el('svcNote').textContent, /API Key/);
+  assert.equal(h.el('svcNote').className, 'note bad');
+  h.el('svcKey').value = 'sk-test';
+  h.el('svcKey').oninput();
+  h.el('svcTest').click();
+  await h.load();
+  assert.equal(h.posts.length, 0); // 未授权域名，先提示授权
+  assert.match(h.el('svcNote').textContent, /未授权/);
+});
+
+test('built-in services cannot be deleted but custom ones can', async () => {
+  const h = optionsHarness();
+  await h.load();
+  h.pick('serviceSelect', 'ollama');
+  await h.load();
+  assert.equal(h.el('svcDelete').disabled, true);
+  h.el('svcDelete').click();
+  await h.load();
+  assert.equal(h.last().services.some((item) => item.id === 'ollama'), true);
+  h.el('svcAdd').click();
+  await h.load();
+  h.el('svcDelete').click();
+  await h.load();
+  assert.equal(h.el('svcDelete').disabled, true);
+  assert.equal(h.last().activeServiceId, 'xai');
+});
+
+test('the settings page renders captured requests and can clear them', async () => {
+  const h = optionsHarness({ captures: [{ method: 'POST', url: 'https://x.com/i/api/graphql/abc', reqBody: '{"q":"x"}', respLen: 12, ts: 1750000000000 }] });
+  await h.load();
+  assert.equal(h.el('caps').innerHTML, '');
+  assert.equal(h.el('caps').childNodes.length, 1);
+  assert.equal(h.el('clear').disabled, undefined);
+  h.el('clear').click();
+  await h.load();
+  assert.equal(h.writes.at(-1).captures.length, 0);
+});
+
+test('the toolbar popup reports the live engine, expert and service', async () => {
+  const h = popupHarness();
+  await h.load();
+  assert.equal(h.el('build').textContent, 'v0.4.0');
+  assert.equal(h.el('enabled').checked, true);
+  assert.equal(h.el('f-engine').textContent, 'Grok');
+  assert.match(h.el('f-expert').textContent, /大白话/);
+  assert.equal(h.el('f-service').textContent, '用不上');
+  assert.match(h.el('f-status-text').textContent, /登录态/);
+  assert.equal(h.el('f-dot').className, 'dot live');
+  assert.equal(h.body.classList.contains('off'), false);
+});
+
+test('the popup flags an unfinished third-party service and points at the settings page', async () => {
+  const h = popupHarness({ settings: { mode: 'api', activeServiceId: 'custom' } });
+  await h.load();
+  assert.equal(h.el('f-engine').textContent, '第三方 API');
+  assert.equal(h.el('f-service').textContent, '自定义服务');
+  assert.equal(h.el('f-status-text').textContent, '还没填接口地址');
+  assert.equal(h.el('f-dot').className, 'dot wait');
+  assert.match(h.el('hint').textContent, /设置页/);
+});
+
+test('the popup switch writes settings and the button hands off to the full page', async () => {
+  const h = popupHarness();
+  await h.load();
+  const toggle = h.el('enabled');
+  toggle.checked = false;
+  toggle.listeners.change({ target: toggle });
+  assert.equal(h.writes.at(-1).settings.enabled, false);
+  assert.match(h.el('f-status-text').textContent, /已暂停/);
+  assert.equal(h.body.classList.contains('off'), true);
+  h.el('open-options').listeners.click();
+  assert.equal(h.state.opened, 1);
+  assert.equal(h.state.closed, 1);
+});
+
+test('the popup never sends a request and every page asset it references exists', () => {
+  const manifest = JSON.parse(source('manifest.json'));
+  assert.equal(manifest.action.default_popup, 'popup.html');
+  assert.equal(manifest.options_page, 'options.html');
+  for (const page of [manifest.action.default_popup, manifest.options_page]) {
+    const markup = source(page);
+    for (const [, ref] of markup.matchAll(/(?:src|href)="([^"]+)"/g)) {
+      if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref)) continue;
+      assert.ok(fs.existsSync(path.join(root, ref)), `${page} 引用的 ${ref} 不存在`);
+    }
+  }
+  const popup = source('popup.html');
+  assert.doesNotMatch(popup, /\son[a-z]+="/i);
+  assert.doesNotMatch(popup, /<script>[^<]/);
 });

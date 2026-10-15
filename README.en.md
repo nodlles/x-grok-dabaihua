@@ -10,7 +10,7 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
   <img src="./docs/screenshot.png" alt="Plain-language card shown next to the article body" width="600">
 </p>
 
-> The clever bit: the extension **never touches any signature and never stores any credentials**. It reuses X's own already-signed Grok request, rewriting only the message into a "speak plainly" instruction before it goes out, then reads back Grok's streamed answer and renders it.
+> The clever bit: the extension **never touches any signature and stores credentials only on your machine**. It can reuse X's own already-signed Grok request, rewriting only the message into a "speak plainly" instruction before it goes out and reading back Grok's streamed answer — or it can call a third-party OpenAI-compatible API with your own key instead.
 
 ## Features
 
@@ -19,13 +19,16 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
 - **X long-form Articles supported**:
   - Article cards in the timeline — keeps X's analysis context so the backend reads the article body as usual;
   - Article detail pages (no inline Grok button) — grabs the full text from the page and drives the Grok drawer to summarize it.
-- **Three modes**:
-  - `grok` real plain-language (default)
-  - `demo` pure UI preview, no Grok call
+- **Four modes**:
+  - `grok` real plain-language (default; reuses your X session)
+  - `api` third-party API — call any OpenAI-compatible endpoint with your own key
+  - `demo` pure UI preview, no model call
   - `learn` learning mode, saves debugging records after capture is explicitly enabled (sensitive request headers are redacted)
+- **Third-party API service registry**: presets for xAI, OpenAI, DeepSeek, OpenRouter, Groq, SiliconFlow and local Ollama; edit the URL, key, model, temperature and system prompt, or add your own service. Requests go out from the background service worker, and the target origin is authorized on demand from Settings.
+- **Explanation experts**: built-in plain-language, technical breakdown, translate + explain, key points, and critique, plus a free-form custom one. Prompts follow a "scope + fidelity constraints + no fabrication" shape and support `{{text}}`, `{{url}}`, `{{author}}` and other placeholders, with a live preview in Settings. Switch experts right from the card header.
 - **Follow-up questions**: ask inside the card after an explanation, with each answer appended to the conversation. Cached explanations support follow-ups too.
 - **Continue in Grok**: prepares a draft in X’s native Grok input with the original post, explanation, sources, and completed turns for you to edit and send.
-- **Result cache**: the same tweet shows instantly; hit "Re-explain" to force a refresh.
+- **Result cache**: keyed by post + mode + expert + service, so switching experts or services never mixes results; hit "Re-explain" to force a refresh.
 - **Themes**: graphite / light / ocean / neon / follow system.
 - **Hide native drawer**: hides X's own Grok drawer only while explaining, keeping its native position to prevent autofocus from scrolling the timeline to the top; restores its original inline styles on completion, error, timeout, or card close.
 
@@ -39,11 +42,17 @@ Hover any tweet or long-form **Article** on X (Twitter) and it's automatically e
 3. Click "Load unpacked" and select this repo's directory.
 4. Open [x.com](https://x.com) and hover over any tweet.
 
-> Use it in a browser already logged in to X (the Grok explanation relies on your own session). The extension declares only the `storage` permission, with host access limited to `x.com` / `twitter.com`.
+> Grok mode needs a browser already logged in to X (it relies on your own session); third-party API mode uses your own key and does not. The extension declares only the `storage` permission, with required host access limited to `x.com` / `twitter.com`; API endpoints are granted on demand via `optional_host_permissions`.
 
 ## Settings
 
-Click the extension icon or open "Options" from `chrome://extensions` to configure: on/off, mode, hover delay, theme, custom prompt, whether to hide the native drawer, and (if auto-detection misses) a manual drawer selector.
+Clicking the extension icon opens a small popup that reports the current state (engine, expert, service, readiness) with a single enable switch. Use "Open full settings" there, or open "Options" from `chrome://extensions`, for the detailed configuration:
+
+- **Basics**: on/off, mode (Grok / third-party API / demo / learn), hover delay, theme, whether to hide the native drawer, and (if auto-detection misses) a manual drawer selector.
+- **Experts**: pick an expert, edit its prompt, restore the default, and preview exactly what will be sent to the model.
+- **AI services**: add or remove services, set URL, API key, model, temperature and system prompt; "Save and authorize domain" requests the permission and "Test connection" sends a `ping`.
+
+API keys live only in local `chrome.storage`; they are never sent to the developer and are not exposed by packaging or sharing.
 
 Request capture is off by default. It requires the extension to be enabled, learning mode selected, and the capture switch enabled. Existing switch preferences are preserved, but capture is inactive in plain-language and demo modes. Up to 30 records are stored locally, including request bodies and response samples that may contain chat content. View, copy, or clear them in Settings. Check records before sharing: header redaction does not sanitize the entire record.
 
@@ -76,11 +85,17 @@ Tests execute the actual scripts with simulated DOM, storage, and timers. They c
 | `content.js` | ISOLATED | Hover progress ring, card UI, extracting tweet/article text, locating and clicking the Grok entry point, receiving main-world messages to render |
 | `render.js` / `cardui.js` / `cache.js` / `card.css` | ISOLATED | Rich-text rendering, card interaction, caching, styles |
 | `conversation.js` | ISOLATED | Builds contextual prompts from the post, explanation, sources, and completed turns; validates length |
+| `aiconfig.js` | Shared | Pure data/functions: service registry, experts and prompt templates, shared by the content script, background worker and settings page |
+| `background.js` | SW | Proxies third-party API requests (bypassing page CORS), parses SSE streams, serves the settings-page connection test |
+| `theme.css` | — | Shared theme layer: colour tokens, type scale and base controls (switch, buttons) used by both the settings page and the popup |
+| `popup.html` / `popup.js` | — | Toolbar popup: current state, one enable switch, and the hand-off to the settings page |
 | `options.html` / `options.js` | — | Settings page |
 
 The two worlds talk via `window.postMessage`. WebSocket requests replace the input text with the plain-language prompt and preserve the other message fields. Legacy fetch requests are rewritten as follows:
 - Normal tweets (text present in the DOM) → embed the text into the prompt, switch to a plain chat message;
 - Articles / image / video posts (no text in the DOM) → **keep** `promptMetadata` so X's backend supplies the body, and only append the "speak plainly" style requirement.
+
+In third-party API mode the content script hands the `system` message and the rendered user prompt to the background service worker, which posts them with `Authorization: Bearer <your key>` to your configured `/chat/completions` endpoint and streams `delta` chunks back into the card. Follow-ups send a real multi-turn `messages` array (`system` + initial exchange + completed turns + the new question) rather than a JSON blob.
 
 Current X Grok contenteditable inputs and legacy textareas both support follow-ups and draft handoff. After local code changes, reload the extension in your browser's extension manager and refresh X so both script worlds update. Learning-mode request capture currently covers legacy `fetch`/`XHR` only; it does not record WebSocket chats.
 

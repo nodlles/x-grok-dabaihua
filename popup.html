@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>X 大白话</title>
+<link rel="stylesheet" href="theme.css" />
+<style>
+  /* ============================================================
+     工具栏弹窗 / 只报状态
+     点扩展图标时只看「现在会怎样」：开关 + 四行现状 + 一个去设置页的入口。
+     真正的配置都在 options.html 里做。
+     ============================================================ */
+
+  body { width: 340px; background: var(--paper); }
+
+  .pop { padding: 14px 16px 13px; }
+
+  .pop-head { display: flex; align-items: baseline; gap: 7px; }
+  .pop-head .mark { color: var(--accent); font-size: 13px; }
+  .pop-head h1 { margin: 0; font: 600 var(--fs-lg) / 1 var(--font-ui); letter-spacing: -0.01em; }
+  .pop-head .build { margin-left: auto; color: var(--ink-3); font: var(--fs-xs) / 1 var(--font-mono); }
+
+  .pop-lead { margin: 7px 0 0; color: var(--ink-2); font-size: var(--fs-sm); }
+
+  /* 唯一一个值得在弹窗里直接改的开关 */
+  .pop-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s3);
+    margin-top: 13px;
+    padding: 9px 12px;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    cursor: pointer;
+  }
+  .pop-toggle .row-label { font-size: var(--fs-sm); font-weight: 600; }
+
+  /* 现状四行 */
+  .facts { margin: 13px 0 0; padding: 0; }
+  .fact {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--s3);
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .fact:first-child { border-top: 1px solid var(--line); }
+  .fact dt { color: var(--ink-2); font-size: var(--fs-sm); }
+  .fact dd {
+    margin: 0;
+    min-width: 0;
+    color: var(--ink);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .fact dd.status { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--ink-2); }
+  .dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--ink-3); }
+  .dot.live { background: var(--ok); }
+  .dot.wait { background: var(--accent); }
+  .status.wait { color: var(--accent); }
+
+  .pop-actions { display: flex; gap: var(--s2); margin-top: 14px; }
+  .pop-actions .btn { text-decoration: none; }
+  #open-options { flex: 1; justify-content: center; }
+
+  .pop-hint { margin: 11px 0 0; color: var(--ink-3); font-size: var(--fs-xs); text-wrap: pretty; }
+  .pop-hint.wait { color: var(--accent); }
+
+  /* 关掉插件时把现状压暗，一眼看出现在不会解读 */
+  body.off .facts { opacity: 0.55; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+    .pop > * { animation: pop-rise 320ms var(--ease) both; }
+    .pop > *:nth-child(2) { animation-delay: 30ms; }
+    .pop > *:nth-child(3) { animation-delay: 60ms; }
+    .pop > *:nth-child(4) { animation-delay: 90ms; }
+    .pop > *:nth-child(5) { animation-delay: 120ms; }
+    .pop > *:nth-child(6) { animation-delay: 150ms; }
+    @keyframes pop-rise {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: none; }
+    }
+  }
+</style>
+</head>
+<body>
+<div class="pop">
+
+  <header class="pop-head">
+    <span class="mark" aria-hidden="true">✦</span>
+    <h1>大白话</h1>
+    <span class="build" id="build"></span>
+  </header>
+  <p class="pop-lead">悬停推文，读成大白话。</p>
+
+  <label class="pop-toggle" for="enabled">
+    <span class="row-label">启用插件</span>
+    <span class="switch"><input type="checkbox" id="enabled" /></span>
+  </label>
+
+  <dl class="facts">
+    <div class="fact"><dt>引擎</dt><dd id="f-engine">—</dd></div>
+    <div class="fact"><dt>专家</dt><dd id="f-expert">—</dd></div>
+    <div class="fact"><dt>服务</dt><dd id="f-service">—</dd></div>
+    <div class="fact">
+      <dt>状态</dt>
+      <dd class="status" id="f-status"><i class="dot" id="f-dot"></i><span id="f-status-text">—</span></dd>
+    </div>
+  </dl>
+
+  <div class="pop-actions">
+    <button class="btn btn-primary" id="open-options" type="button">打开完整设置</button>
+    <a class="btn btn-quiet" href="https://x.com/home" target="_blank" rel="noopener noreferrer">去 X 试一下</a>
+  </div>
+  <p class="pop-hint" id="hint">引擎、专家、API Key 都在设置页里改。</p>
+
+</div>
+
+<script src="aiconfig.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

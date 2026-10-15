@@ -9,10 +9,19 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'u
 if (!/^\d+\.\d+\.\d+$/.test(manifest.version)) throw new Error('Expected a three-part release version');
 const files = new Set(['manifest.json', 'LICENSE', 'options.js']);
 for (const entry of manifest.content_scripts) for (const file of [...(entry.js || []), ...(entry.css || [])]) files.add(file);
+if (manifest.background?.service_worker) files.add(manifest.background.service_worker);
 for (const file of Object.values(manifest.icons || {})) files.add(file);
 for (const file of Object.values(manifest.action?.default_icon || {})) files.add(file);
 if (manifest.options_page) files.add(manifest.options_page);
 if (manifest.action?.default_popup) files.add(manifest.action.default_popup);
+// 页面自己引用的本地资源（样式表、页面脚本）也要进包，否则打出来的扩展是裸样式。
+for (const html of [...files].filter((file) => file.endsWith('.html'))) {
+  const markup = fs.readFileSync(path.join(root, html), 'utf8');
+  for (const [, ref] of markup.matchAll(/(?:src|href)="([^"]+)"/g)) {
+    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(ref)) continue; // 外链与锚点跳过
+    files.add(ref.replace(/^\.\//, ''));
+  }
+}
 const names = [...files].sort();
 for (const file of names) {
   if (path.isAbsolute(file) || file.split('/').includes('..')) throw new Error('Unsafe runtime path: ' + file);

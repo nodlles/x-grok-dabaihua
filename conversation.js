@@ -2,6 +2,30 @@
 const XDBH_QUESTION_MAX = 2000;
 const XDBH_CONTEXT_MAX = 60000;
 
+// 第三方 API 模式用真实的多轮消息:system + 初次问答 + 每轮已完成问答 + 本轮问题。
+// 比把背景塞成一段 JSON 更省事,也避免模型把 JSON 当成新指令。
+function xdbhApiMessages(params) {
+  const input = params || {};
+  const question = String(input.question || "").trim();
+  if (!question) throw new Error("请输入想追问的问题。");
+  if (question.length > XDBH_QUESTION_MAX) throw new Error("问题太长,请缩短到 2000 字以内。");
+  const messages = [];
+  if (input.system) messages.push({ role: "system", content: String(input.system) });
+  if (input.initialPrompt) messages.push({ role: "user", content: String(input.initialPrompt) });
+  if (input.initialAnswer) messages.push({ role: "assistant", content: String(input.initialAnswer) });
+  for (const turn of input.turns || []) {
+    if (!turn || turn.state !== "done") continue;
+    messages.push({ role: "user", content: String(turn.question || "") });
+    messages.push({ role: "assistant", content: String(turn.raw || "") });
+  }
+  messages.push({ role: "user", content: question });
+  const total = messages.reduce((sum, message) => sum + message.content.length, 0);
+  if (total > XDBH_CONTEXT_MAX) {
+    throw new Error("对话背景已超过 60000 字,请重新解释后开始新对话。");
+  }
+  return messages;
+}
+
 function xdbhConversationPrompt(conversation, question, handoff = false) {
   const q = String(question || '').trim();
   if (!handoff && !q) throw new Error('请输入想追问的问题。');

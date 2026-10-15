@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "X 大白话 · Grok 解读增强",
-  "version": "0.3.2",
-  "description": "悬停 X 推文或文章，用 Grok 获取大白话中文解读，支持卡片内多轮追问和转入 Grok 继续。需登录 X 并具备 Grok 使用权限。",
+  "version": "0.4.0",
+  "description": "悬停 X 推文或文章，用大白话中文解读。支持 X 内置 Grok 或自带 Key 的第三方 API，可选解读专家，支持卡片内多轮追问。",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -16,10 +16,17 @@
     "https://x.com/*",
     "https://twitter.com/*"
   ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "options_page": "options.html",
   "action": {
-    "default_title": "X 大白话 · 设置",
-    "default_popup": "options.html",
+    "default_title": "X 大白话 · 状态与设置",
+    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -45,6 +52,7 @@
         "https://twitter.com/*"
       ],
       "js": [
+        "aiconfig.js",
         "render.js",
         "cache.js",
         "cardui.js",

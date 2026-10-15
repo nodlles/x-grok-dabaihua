@@ -52,7 +52,8 @@ function makeDraggable(el) {
   const head = el.querySelector(".xdbh-card-head");
   if (!head) return;
   head.addEventListener("mousedown", (e) => {
-    if (e.target.closest("button")) return;
+    // 头部的交互控件（专家下拉、关闭按钮等）不该触发拖动。
+    if (e.target.closest("button, select, input, textarea, a")) return;
     e.preventDefault();
     el.dataset.dragged = "1";
     const r = el.getBoundingClientRect();

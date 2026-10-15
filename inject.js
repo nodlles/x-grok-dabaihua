@@ -66,11 +66,16 @@
   function buildPrompt(a, origMsg) {
     const parts = [a.prompt || "用大白话、口语化的中文解释这条推文在讲什么,别复述原文,直接说人话:"];
     if (a.tweetText) parts.push("\n【推文原文】\n" + a.tweetText);
+    if (a.textComplete && a.tweetText && String(a.tweetText).trim()) {
+      parts.push("\n原文已完整提供。只解释这段文字的意思，不要搜索、打开链接或核实背景。直接用两三句话回答；原文没交代的信息不要编造。");
+      return parts.join("\n");
+    }
     let url = a.tweetUrl || "";
     if (!url && typeof origMsg === "string" && /^https?:\/\/\S+$/.test(origMsg.trim())) {
       url = origMsg.trim();
     }
-    if (url) parts.push("\n【原帖链接】" + url);
+    // 提示词模板里已经写过 {{url}} 时不再重复附一次。
+    if (url && !String(a.prompt || "").includes(url)) parts.push("\n【原帖链接】" + url);
     return parts.join("\n");
   }
 
@@ -226,6 +231,9 @@
           frame.session_id && text && item.role === "user" &&
           (!armed.followup || text.text === armed.message)) {
         text.text = armed.followup ? armed.message : buildPrompt(armed, text.text);
+        // X 当前客户端的 Quick Answer 使用逐请求 steer_action。
+        // 初次解读不必继承 Auto 的高强度思考;保留原生 session 模型和追问设置。
+        if (!armed.followup) event.steer_action = "quick_answer";
         data = JSON.stringify(frame);
         task = activeRequest;
         Object.assign(task, { socket: this, sessionId: frame.session_id, eventId: event.event_id, responseId: null, seen: new Set(), textFormat: null });

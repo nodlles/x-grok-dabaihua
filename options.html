@@ -1,150 +1,595 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>X 大白话 · 设置</title>
-  <style>
-    :root { color-scheme: dark; }
-    body {
-      margin: 0;
-      min-width: 420px;
-      max-width: 560px;
-      padding: 20px 22px 28px;
-      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-      background: radial-gradient(1200px 400px at 20% -10%, #241c4d 0%, #0e0c1e 55%);
-      color: #e8e6f5;
-    }
-    h1 {
-      font-size: 18px;
-      margin: 0 0 4px;
-      background: linear-gradient(90deg, #d7c8ff, #8fe9ff);
-      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-    }
-    .sub { color: #9b94b8; font-size: 12px; margin-bottom: 18px; }
-    .card {
-      background: rgba(255,255,255,0.04);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 14px;
-      padding: 14px 16px;
-      margin-bottom: 14px;
-    }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0; }
-    label { font-size: 13.5px; }
-    .hint { font-size: 11.5px; color: #9b94b8; margin-top: 2px; }
-    select, input[type=range], textarea {
-      background: rgba(0,0,0,0.3);
-      border: 1px solid rgba(124,92,255,0.35);
-      color: #e8e6f5;
-      border-radius: 9px;
-      padding: 7px 9px;
-      font-size: 13px;
-      font-family: inherit;
-    }
-    textarea { width: 100%; box-sizing: border-box; min-height: 64px; resize: vertical; }
-    input[type=range] { width: 200px; }
-    .switch { display:inline-flex; align-items:center; gap:8px; }
-    .val { font-variant-numeric: tabular-nums; color:#8fe9ff; min-width: 52px; text-align:right; }
-    .seg { display:flex; gap:6px; }
-    .seg button {
-      border:1px solid rgba(124,92,255,0.35); background:transparent; color:#cfcae0;
-      padding:6px 12px; border-radius:9px; cursor:pointer; font-size:13px;
-    }
-    .seg button.on { background: rgba(124,92,255,0.28); color:#fff; border-color: rgba(124,92,255,0.7); }
-    .cap {
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 11px; background: rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.08);
-      border-radius: 10px; padding: 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-all;
-      max-height: 220px; overflow:auto;
-    }
-    .cap .u { color:#8fe9ff; } .cap .m { color:#ffd479; }
-    .btns { display:flex; gap:8px; margin-top:6px; }
-    .btns button {
-      border:1px solid rgba(124,92,255,0.4); background:rgba(124,92,255,0.16); color:#d7c8ff;
-      padding:7px 12px; border-radius:9px; cursor:pointer; font-size:12.5px;
-    }
-    .saved { color:#7CFFB2; font-size:12px; margin-left:8px; opacity:0; transition:opacity .2s; }
-    .saved.show { opacity:1; }
-    .empty { color:#9b94b8; font-size:12.5px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>X 大白话 · 设置</title>
+<link rel="stylesheet" href="theme.css" />
+<style>
+  /* ============================================================
+     设置页布局 / proof desk
+     颜色与基础控件在 theme.css，这里只管本页的排版：
+     抬头 → 左侧分区导航 + 正文，靠发丝分隔线划分设置项。
+     ============================================================ */
+
+  /* 设置页会比工具栏弹窗宽，给窗口留个最小宽度，免得窄窗口里挤成一团 */
+  body { min-width: 420px; }
+
+  .page { max-width: 1040px; margin: 0 auto; padding: var(--s6) var(--s5) 80px; }
+
+  /* ---------------- 抬头 ---------------- */
+  .masthead { padding-bottom: var(--s5); border-bottom: 1px solid var(--line); }
+
+  .wordmark { display: flex; align-items: baseline; gap: 10px; }
+  .wordmark .mark { color: var(--accent); font-size: 15px; line-height: 1; }
+  .wordmark h1 {
+    margin: 0;
+    font: 400 var(--fs-2xl) / 1.1 var(--font-display);
+    letter-spacing: -0.01em;
+  }
+  .wordmark .build {
+    font: var(--fs-xs) / 1 var(--font-mono);
+    color: var(--ink-3);
+    letter-spacing: 0.04em;
+  }
+  .lead {
+    margin: var(--s3) 0 0;
+    max-width: 56ch;
+    color: var(--ink-2);
+    text-wrap: pretty;
+  }
+
+  .status { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s3); margin: var(--s4) 0 0; }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--paper);
+    font-size: var(--fs-sm);
+    color: var(--ink-2);
+  }
+  .chip b { color: var(--ink); font-weight: 600; }
+  .chip.live::before,
+  .chip.wait::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .chip.live::before { background: var(--ok); }
+  .chip.wait::before { background: var(--accent); }
+  .chip.mute { color: var(--ink-3); }
+
+  /* ---------------- 骨架：分区导航 + 内容 ---------------- */
+  .shell { display: grid; grid-template-columns: 1fr; gap: var(--s6); margin-top: var(--s6); }
+
+  .rail ol { display: flex; flex-wrap: wrap; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+  .rail a {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 7px 11px;
+    border-radius: var(--r-sm);
+    color: var(--ink-2);
+    text-decoration: none;
+    font-size: var(--fs-sm);
+    transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+  }
+  .rail .num { font: var(--fs-xs) / 1 var(--font-display); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .rail a.is-active { background: var(--paper); color: var(--ink); box-shadow: var(--shadow-sm); }
+  .rail a.is-active .num { color: var(--accent); }
+  @media (hover: hover) {
+    .rail a:hover { background: var(--paper); color: var(--ink); }
+  }
+
+  main { min-width: 0; }
+
+  /* ---------------- 分区 ---------------- */
+  .sec { padding-top: var(--s6); }
+  .sec + .sec { margin-top: var(--s7); border-top: 1px solid var(--line); }
+
+  .sec-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--s5); }
+  .eyebrow { display: flex; align-items: center; gap: 9px; }
+  .eyebrow .num { font: var(--fs-sm) / 1 var(--font-display); color: var(--accent); font-variant-numeric: tabular-nums; }
+  .eyebrow .rule { width: 22px; height: 2px; border-radius: 2px; background: var(--accent); }
+  .sec h2 { margin: 0; font: 650 var(--fs-lg) / 1.35 var(--font-ui); letter-spacing: -0.005em; }
+  .sec-desc { margin: 0; max-width: 58ch; color: var(--ink-2); font-size: var(--fs-sm); text-wrap: pretty; }
+
+  /* ---------------- 行 ---------------- */
+  .rows { display: flex; flex-direction: column; }
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s3) var(--s5);
+    padding: var(--s4) 0;
+  }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row-flush { padding-top: 0; }
+  .row-text { flex: 1 1 260px; min-width: 0; }
+  .row-text h3 { margin: 0; font: 600 var(--fs-md) / 1.4 var(--font-ui); }
+  .row-text h3 label { cursor: pointer; }
+  .row-text p { margin: 3px 0 0; color: var(--ink-2); font-size: var(--fs-sm); text-wrap: pretty; }
+  .row-control { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s3); }
+  .row-control .w-190 { width: 190px; }
+  .row-control .w-110 { width: 110px; }
+  @media (max-width: 620px) {
+    .row-control { flex: 1 1 100%; }
+    .row-control select,
+    .row-control .w-190,
+    .row-control .w-110 { width: 100%; }
+  }
+
+  .stack { padding: var(--s4) 0; }
+  .stack + .stack { border-top: 1px solid var(--line); }
+
+  /* ---------------- 表单控件 ---------------- */
+  label.lbl { display: block; font-size: var(--fs-sm); font-weight: 600; color: var(--ink); margin-bottom: 6px; }
+
+  select, input[type="text"], input[type="password"], input[type="number"], textarea {
+    width: 100%;
+    padding: 0 11px;
+    height: 40px;
+    background: var(--field);
+    color: var(--ink);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    font: var(--fs-md) / 1.4 var(--font-ui);
+    transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  }
+  textarea { height: auto; padding: 10px 11px; resize: vertical; min-height: 68px; line-height: 1.6; }
+  select {
+    width: auto;
+    min-width: 170px;
+    padding-right: 30px;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%238a857a' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    cursor: pointer;
+  }
+  .row-control select { min-width: 168px; }
+  .field-note { margin: 6px 0 0; color: var(--ink-2); font-size: var(--fs-sm); text-wrap: pretty; }
+  /* 分段选择（解读引擎） */
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button {
+    font: 500 var(--fs-sm) / 1 var(--font-ui);
+    min-height: 40px;
+    padding: 0 14px;
+    background: var(--paper);
+    color: var(--ink-2);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    touch-action: manipulation;
+    transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease),
+      border-color var(--dur) var(--ease), transform 90ms var(--ease);
+  }
+  .seg button:active { transform: scale(0.97); }
+  .seg button.on { background: var(--cta); color: var(--cta-ink); border-color: transparent; }
+  @media (hover: hover) {
+    .seg button:not(.on):hover { border-color: var(--accent); color: var(--ink); }
+  }
+
+  /* 滑杆 */
+  input[type="range"] {
+    appearance: none;
+    width: 170px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 3px;
+    border-radius: 3px;
+    background: var(--line-strong);
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -6.5px;
+    border-radius: 50%;
+    background: var(--cta);
+    border: 3px solid var(--canvas);
+  }
+  input[type="range"]:focus-visible { outline-offset: 6px; }
+  .val { font: var(--fs-sm) / 1 var(--font-mono); color: var(--ink); font-variant-numeric: tabular-nums; min-width: 56px; text-align: right; }
+
+  /* 按钮 */
+  .btns { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin-top: var(--s4); }
+
+  /* 保存提示 */
+  .saved {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 11px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--line);
+    background: var(--accent-soft);
+    color: var(--ok);
+    font-size: var(--fs-xs);
+    opacity: 0;
+    transform: translateY(-3px);
+    transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+  }
+  .saved.show { opacity: 1; transform: none; }
+
+  /* 状态行 */
+  .note { margin-top: var(--s3); min-height: 20px; font-size: var(--fs-sm); color: var(--ink-2); }
+  .note::before { content: none; }
+  .note.ok, .note.bad { display: flex; align-items: center; }
+  .note.ok::before, .note.bad::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    margin-right: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .note.ok { color: var(--ok); }
+  .note.ok::before { background: var(--ok); }
+  .note.bad { color: var(--bad); }
+  .note.bad::before { background: var(--bad); }
+
+  /* 代码/预览面板 */
+  .preview {
+    margin-top: var(--s3);
+    padding: var(--s3) var(--s4);
+    max-height: 240px;
+    overflow: auto;
+    background: var(--sunken);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    font: var(--fs-xs) / 1.75 var(--font-mono);
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .preview-label { margin: var(--s4) 0 0; font-size: var(--fs-sm); color: var(--ink-3); }
+
+  /* 捕获记录 */
+  .cap {
+    margin-top: var(--s3);
+    padding: var(--s3) var(--s4);
+    background: var(--sunken);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    font: var(--fs-xs) / 1.7 var(--font-mono);
+    color: var(--ink-2);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 260px;
+    overflow: auto;
+  }
+  .cap .m {
+    display: inline-block;
+    padding: 1px 6px;
+    margin-right: 4px;
+    border-radius: var(--r-xs);
+    background: var(--accent-soft);
+    color: var(--accent);
+    border: 1px solid var(--line);
+    font-weight: 700;
+  }
+  .cap .u { color: var(--ink); }
+  .empty { margin-top: var(--s3); padding: var(--s4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--ink-3); font-size: var(--fs-sm); text-align: center; }
+
+  /* 隐私说明 */
+  .privacy { display: flex; flex-direction: column; gap: var(--s3); align-items: flex-start; }
+  .privacy p { margin: 0; max-width: 62ch; color: var(--ink-2); font-size: var(--fs-sm); text-wrap: pretty; }
+  .privacy a { color: var(--accent); font-size: var(--fs-sm); text-decoration: none; border-bottom: 1px solid currentColor; }
+  @media (hover: hover) { .privacy a:hover { color: var(--ink); } }
+
+  /* 入场：分区依次升起 */
+  @media (prefers-reduced-motion: no-preference) {
+    html { scroll-behavior: smooth; }
+    .masthead { animation: rise 460ms var(--ease) both; }
+    .sec { animation: rise 500ms var(--ease) both; }
+    .sec:nth-of-type(1) { animation-delay: 60ms; }
+    .sec:nth-of-type(2) { animation-delay: 130ms; }
+    .sec:nth-of-type(3) { animation-delay: 200ms; }
+    .sec:nth-of-type(4) { animation-delay: 270ms; }
+    .sec:nth-of-type(5) { animation-delay: 340ms; }
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition-duration: 1ms !important; }
+  }
+
+  /* 宽屏：左侧固定的分区导航 */
+  @media (min-width: 900px) {
+    .page { padding: var(--s7) var(--s6) 96px; }
+    .shell { grid-template-columns: 188px minmax(0, 1fr); gap: var(--s7); }
+    .rail { position: sticky; top: var(--s6); align-self: start; }
+    .rail ol { flex-direction: column; flex-wrap: nowrap; gap: 2px; }
+    .rail a { width: 100%; }
+    main { max-width: 720px; }
+  }
+</style>
 </head>
 <body>
-  <h1>✦ X 大白话 · Grok 解读增强</h1>
-  <div class="sub">悬停推文或文章,用当前 X 登录态获取 Grok 大白话解读。</div>
+<div class="page">
 
-  <div class="card">
-    <div class="row">
-      <div><label>启用插件</label><div class="hint">关闭后停止插件解读并恢复原生抽屉</div></div>
-      <label class="switch"><input type="checkbox" id="enabled" /> 开启</label>
+  <header class="masthead">
+    <div class="wordmark">
+      <span class="mark" aria-hidden="true">✦</span>
+      <h1>大白话</h1>
+      <span class="build" id="build"></span>
     </div>
-    <div class="row">
-      <div><label>工作模式</label>
-        <div class="hint">大白话 = 真接 Grok;演示 = 仅看 UI;学习 = 抓请求结构调试</div></div>
-      <div class="seg">
-        <button data-mode="grok" id="m-grok">大白话</button>
-        <button data-mode="demo" id="m-demo">演示</button>
-        <button data-mode="learn" id="m-learn">学习</button>
-      </div>
+    <p class="lead">悬停推文或长文，用大白话中文讲清它在说什么。可以借 X 内置的 Grok，也可以接你自己带 Key 的第三方接口。</p>
+    <div class="status" aria-label="当前状态">
+      <span class="chip">引擎 <b id="st-engine">—</b></span>
+      <span class="chip">专家 <b id="st-expert">—</b></span>
+      <span class="chip">服务 <b id="st-service">—</b></span>
+      <span class="chip" id="st-note">状态 <b id="st-ready">—</b></span>
     </div>
-    <div class="row">
-      <div><label>卡片主题</label><div class="hint">随时切换,即时生效</div></div>
-      <select id="theme">
-        <option value="graphite">石墨深灰</option>
-        <option value="light">极简浅色</option>
-        <option value="ocean">海洋蓝</option>
-        <option value="neon">霓虹紫</option>
-        <option value="auto">跟随系统</option>
-      </select>
-    </div>
-    <div class="row">
-      <div><label>悬停触发时间</label><div class="hint">鼠标停多久后自动触发</div></div>
-      <div class="switch"><input type="range" id="delay" min="300" max="3000" step="100" />
-        <span class="val" id="delayVal"></span></div>
-    </div>
-    <div class="row">
-      <div><label>学习模式请求捕获</label><div class="hint">默认关闭,仅学习模式生效。保存请求正文和响应样本,敏感请求头打码</div></div>
-      <label class="switch"><input type="checkbox" id="capture" /> 开启</label>
-    </div>
-    <div class="row">
-      <div><label>隐藏 X 自己的 Grok 抽屉</label>
-        <div class="hint">解读期间移到屏幕外,结束或关闭卡片后恢复</div></div>
-      <label class="switch"><input type="checkbox" id="hideDrawer" /> 开启</label>
-    </div>
-    <div style="margin-top:6px">
-      <label style="font-size:12.5px">自定义抽屉选择器(可选)</label>
-      <div class="hint">默认那组猜不中时:右键抽屉→检查,把它的 CSS 选择器填这里</div>
-      <input type="text" id="drawerSelector" placeholder='例如 [data-testid="GrokDrawer"]'
-        style="width:100%;box-sizing:border-box;margin-top:5px;font-family:ui-monospace,monospace;font-size:12px" />
-    </div>
-  </div>
+  </header>
 
-  <div class="card">
-    <label>大白话提示词(prompt)</label>
-    <div class="hint">大白话模式使用此提示词。可改成「东北话」「带吐槽」等任意风格。</div>
-    <textarea id="prompt"></textarea>
-    <div class="btns">
-      <button id="save">保存设置</button>
-      <span class="saved" id="saved">已保存 ✓</span>
-    </div>
-  </div>
+  <div class="shell">
 
-  <div class="card">
-    <div class="row" style="margin-top:0">
-      <label>已捕获的 Grok 请求</label>
-      <div class="btns" style="margin-top:0">
-        <button id="copy">复制全部 JSON</button>
-        <button id="clear">清空</button>
-      </div>
-    </div>
-    <div class="hint">启用学习模式请求捕获后,这里显示本地调试记录（最多 30 条）。正文和响应可能含聊天内容,复制分享前请检查。</div>
-    <div id="caps"></div>
-  </div>
+    <nav class="rail" aria-label="设置分区">
+      <ol>
+        <li><a href="#sec-basic"><span class="num">01</span>基本设置</a></li>
+        <li><a href="#sec-expert"><span class="num">02</span>解读专家</a></li>
+        <li><a href="#sec-service"><span class="num">03</span>AI 服务</a></li>
+        <li><a href="#sec-debug"><span class="num">04</span>学习与调试</a></li>
+        <li><a href="#sec-privacy"><span class="num">05</span>数据与隐私</a></li>
+      </ol>
+    </nav>
 
-  <div class="card">
-    <label>数据与隐私</label>
-    <p class="hint">悬停解读和发送追问时，当前帖子文本、链接及相关问答会发给 X/Grok，并使用你的 Grok 额度。设置与初次解读缓存保存在本机。请求捕获默认关闭，开启后也仅在学习模式生效。</p>
-    <a href="https://github.com/nodlles/x-grok-dabaihua/blob/main/docs/PRIVACY.md" target="_blank" rel="noopener noreferrer" style="color:#8fe9ff;font-size:12px">阅读隐私说明</a>
+    <main>
+
+      <!-- 01 基本设置 -->
+      <section class="sec" id="sec-basic">
+        <div class="sec-head">
+          <div class="eyebrow"><span class="rule" aria-hidden="true"></span><span class="num">01</span></div>
+          <h2>基本设置</h2>
+          <p class="sec-desc">决定悬停之后会发生什么：用哪个引擎、卡片长什么样。</p>
+        </div>
+
+        <div class="rows">
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="enabled">启用插件</label></h3>
+              <p>关掉之后不再解读，X 原生的抽屉也交还给它自己。</p>
+            </div>
+            <div class="row-control">
+              <span class="switch"><input type="checkbox" id="enabled" /></span>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3>解读引擎</h3>
+              <p>Grok 复用你在 X 的登录态；第三方 API 用你自己的 Key 直连；演示只看界面；学习只抓请求结构。</p>
+            </div>
+            <div class="row-control">
+              <div class="seg" role="group" aria-label="解读引擎">
+                <button type="button" data-mode="grok" id="m-grok">Grok</button>
+                <button type="button" data-mode="api" id="m-api">第三方 API</button>
+                <button type="button" data-mode="demo" id="m-demo">演示</button>
+                <button type="button" data-mode="learn" id="m-learn">学习</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="theme">卡片主题</label></h3>
+              <p>只有悬停弹出的那张卡片会变；这个设置页跟着系统深浅色走。</p>
+            </div>
+            <div class="row-control">
+              <select id="theme">
+                <option value="graphite">石墨深灰</option>
+                <option value="light">极简浅色</option>
+                <option value="ocean">海洋蓝</option>
+                <option value="neon">霓虹紫</option>
+                <option value="auto">跟随系统</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="delay">悬停触发时间</label></h3>
+              <p>鼠标在推文上停多久之后开始解读。</p>
+            </div>
+            <div class="row-control">
+              <input type="range" id="delay" min="300" max="3000" step="100" />
+              <span class="val" id="delayVal"></span>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="hideDrawer">隐藏 X 自己的 Grok 抽屉</label></h3>
+              <p>解读期间把它藏起来，结束或关闭卡片后还原。只有 Grok 引擎用得上。</p>
+            </div>
+            <div class="row-control">
+              <span class="switch"><input type="checkbox" id="hideDrawer" /></span>
+            </div>
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="drawerSelector">自定义抽屉选择器</label>
+            <input type="text" id="drawerSelector" placeholder='例如 [data-testid="GrokDrawer"]' spellcheck="false" />
+            <p class="field-note">默认那组选择器猜不中时再填：右键抽屉 → 检查，把它的 CSS 选择器贴进来。留空即用内置规则。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02 解读专家 -->
+      <section class="sec" id="sec-expert">
+        <div class="sec-head">
+          <div class="eyebrow"><span class="rule" aria-hidden="true"></span><span class="num">02</span></div>
+          <h2>解读专家</h2>
+          <p class="sec-desc">换个专家就是换一种讲法。提示词按「做什么 + 不许跑偏 + 不许编」写，你也能改。</p>
+        </div>
+
+        <div class="rows">
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="expertSelect">当前专家</label></h3>
+              <p id="expertDesc"></p>
+            </div>
+            <div class="row-control">
+              <select id="expertSelect"></select>
+            </div>
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="expertPrompt">专家提示词</label>
+            <textarea id="expertPrompt" spellcheck="false" rows="8"></textarea>
+            <p class="field-note">
+              占位符：<code>{{text}}</code> 正文、<code>{{url}}</code> 原帖链接、<code>{{author}}</code> 作者、
+              <code>{{handle}}</code> 账号、<code>{{date}}</code> 时间、<code>{{title}}</code> 文章标题、
+              <code>{{expert}}</code> 专家名、<code>{{service}}</code> 服务名、<code>{{model}}</code> 模型名。
+              不写 <code>{{text}}</code> 时，正文会自动接在末尾。
+            </p>
+            <div class="btns">
+              <button type="button" class="btn" id="expertReset">恢复默认提示词</button>
+              <span class="saved" id="saved">已保存 ✓</span>
+            </div>
+            <p class="preview-label">实际发给模型的样子</p>
+            <div class="preview" id="promptPreview"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 03 AI 服务 -->
+      <section class="sec" id="sec-service">
+        <div class="sec-head">
+          <div class="eyebrow"><span class="rule" aria-hidden="true"></span><span class="num">03</span></div>
+          <h2>AI 服务</h2>
+          <p class="sec-desc">任何 OpenAI 兼容的 <code>/chat/completions</code> 接口都能用。切到「第三方 API」引擎时走这里的配置。</p>
+        </div>
+
+        <div class="rows">
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="serviceSelect">当前服务</label></h3>
+              <p>内置的服务可以改地址与模型，也能另存一套自己的。</p>
+            </div>
+            <div class="row-control">
+              <select id="serviceSelect"></select>
+            </div>
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="svcName">服务名称</label>
+            <input type="text" id="svcName" />
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="svcUrl">接口地址</label>
+            <input type="text" id="svcUrl" spellcheck="false" placeholder="https://api.example.com/v1/chat/completions" />
+            <p class="field-note">填到 <code>/chat/completions</code> 为止；后台会带上 <code>Authorization: Bearer</code> 发过去。</p>
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="svcKey">API Key</label>
+            <input type="password" id="svcKey" spellcheck="false" autocomplete="off" />
+            <p class="field-note">只存在本机 <code>chrome.storage</code>，不经过插件作者，也不会随打包或分享泄露。</p>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="svcModel">模型</label></h3>
+              <p>填服务商给出的模型名，例如 <code>deepseek-chat</code>。</p>
+            </div>
+            <div class="row-control">
+              <input type="text" id="svcModel" class="w-190" spellcheck="false" />
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="svcTemp">温度</label></h3>
+              <p>越低越稳，越高越发散。解读类任务 0.2 到 0.4 就够了。</p>
+            </div>
+            <div class="row-control">
+              <input type="number" id="svcTemp" class="w-110" min="0" max="2" step="0.1" />
+            </div>
+          </div>
+
+          <div class="stack">
+            <label class="lbl" for="svcSystem">系统提示词</label>
+            <textarea id="svcSystem" spellcheck="false" rows="3"></textarea>
+            <p class="field-note">每个请求都会带上的前置要求，管住语气和「不许编造」这条底线。</p>
+            <div class="btns">
+              <button type="button" class="btn btn-primary" id="svcSave">保存并授权域名</button>
+              <button type="button" class="btn" id="svcTest">测试连接</button>
+              <button type="button" class="btn btn-quiet" id="svcAdd">新增服务</button>
+              <button type="button" class="btn btn-danger" id="svcDelete">删除</button>
+            </div>
+            <div class="note" id="svcNote"></div>
+            <p class="field-note">发请求前会先申请该域名的访问权限，浏览器会弹一次确认框。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 04 学习与调试 -->
+      <section class="sec" id="sec-debug">
+        <div class="sec-head">
+          <div class="eyebrow"><span class="rule" aria-hidden="true"></span><span class="num">04</span></div>
+          <h2>学习与调试</h2>
+          <p class="sec-desc">给排查用：记录 X 发出的 Grok 请求长什么样。默认关闭，只在学习模式里生效。</p>
+        </div>
+
+        <div class="rows">
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="capture">请求捕获</label></h3>
+              <p>保存请求正文与响应样本，最多 30 条，只存在本机。已知的敏感请求头会打码。</p>
+            </div>
+            <div class="row-control">
+              <span class="switch"><input type="checkbox" id="capture" /></span>
+            </div>
+          </div>
+
+          <div class="stack">
+            <div class="row row-flush">
+              <div class="row-text"><h3>已捕获的请求</h3><p>正文和响应可能含聊天内容，复制分享前先自己过一眼。</p></div>
+              <div class="row-control">
+                <button type="button" class="btn" id="copy">复制全部 JSON</button>
+                <button type="button" class="btn btn-quiet" id="clear">清空</button>
+              </div>
+            </div>
+            <div id="caps"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 05 数据与隐私 -->
+      <section class="sec" id="sec-privacy">
+        <div class="sec-head">
+          <div class="eyebrow"><span class="rule" aria-hidden="true"></span><span class="num">05</span></div>
+          <h2>数据与隐私</h2>
+        </div>
+        <div class="privacy">
+          <p>Grok 引擎下，悬停解读和追问会把帖子文本、链接与相关问答发给 X/Grok，用的是你的 Grok 额度。第三方 API 引擎下，同样的内容发给你自己配置的接口，用你自己的额度。设置、API Key 和解读缓存都只留在本机。</p>
+          <p>请求捕获默认关闭，开启后也只在学习模式里生效。关掉捕获不会删除已有记录，要清空请点上面的「清空」。</p>
+          <a href="https://github.com/nodlles/x-grok-dabaihua/blob/main/docs/PRIVACY.md" target="_blank" rel="noopener noreferrer">阅读完整隐私说明</a>
+        </div>
+      </section>
+
+    </main>
   </div>
-  <script src="options.js"></script>
+</div>
+
+<script src="aiconfig.js"></script>
+<script src="options.js"></script>
 </body>
 </html>

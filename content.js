@@ -3,19 +3,10 @@
 (function () {
   "use strict";
 
-  const DEFAULTS = {
-    enabled: true,
-    mode: "grok", // grok（真·大白话） | demo（看 UI） | learn（抓请求结构）
-    hoverDelay: 1200,
-    capture: false,
-    hideDrawer: true, // 隐藏 X 自己的 Grok 抽屉
-    drawerSelector: "", // 自定义抽屉选择器(我猜不中时手动填)
-    theme: "graphite", // graphite | light | ocean | neon | auto
-    prompt:
-      "用大白话、口语化的中文解释下面这条推文在讲什么,必要时补一句背景。别复述原文,直接说人话:",
-  };
-
-  let settings = { ...DEFAULTS };
+  // 设置结构(服务注册表 + 专家 + 提示词模板)统一由 aiconfig.js 归一化。
+  // settings.prompt 始终等于「当前专家」的提示词模板,主世界 hook 不受影响。
+  const MODE_LABEL = { grok: "Grok", api: "API", demo: "演示", learn: "学习" };
+  let settings = xdbhNormalizeSettings();
   let hoverTimer = null;
   let activeTweet = null;
   let ring = null;
@@ -70,6 +61,7 @@
         resolve(false);
       });
       run.timers.clear();
+      if (run.aborts) run.aborts.forEach((abort) => { try { abort(); } catch (_) {} });
     }
     restoreGrokDrawers();
     if (conversation) { conversation.busy = false; updateComposer(); }
@@ -87,13 +79,26 @@
     return settings.enabled && settings.mode === "learn" && settings.capture;
   }
 
+  // grok / api 都是「真的会出解读」的模式,demo 只看 UI,learn 只抓请求。
+  function isLiveMode() {
+    return settings.mode === "grok" || settings.mode === "api";
+  }
+
   function applySettings(value) {
     const previous = settings;
-    settings = { ...DEFAULTS, ...(value || {}) };
-    if (!settings.enabled || previous.mode !== settings.mode ||
-        previous.prompt !== settings.prompt || previous.capture !== settings.capture) closeCard();
+    settings = xdbhNormalizeSettings(value);
+    // 换专家/换服务不关卡片(卡片自己会重跑);改提示词、切模式、关插件才收摊。
+    const rerun = previous.activeExpertId !== settings.activeExpertId ||
+      previous.activeServiceId !== settings.activeServiceId;
+    const stopped = !settings.enabled || previous.mode !== settings.mode ||
+      previous.capture !== settings.capture || (previous.prompt !== settings.prompt && !rerun);
+    if (stopped) closeCard();
     if (!settings.hideDrawer || previous.drawerSelector !== settings.drawerSelector) restoreGrokDrawers();
-    if (card) card.dataset.theme = resolveTheme(settings.theme);
+    if (card) {
+      card.dataset.theme = resolveTheme(settings.theme);
+      const select = card.querySelector(".xdbh-expert");
+      if (select && select.value !== settings.activeExpertId) select.value = settings.activeExpertId;
+    }
     pushConfigToHook();
     hideGrokDrawers();
   }
@@ -152,23 +157,30 @@
       pending.raw += d.text;
       pending.api.setHtml(xdbhRenderRich(pending.raw, pending.sources));
     } else if (d.__xdbh === "grok-done") {
-      if (!pending.raw.trim()) {
-        failRequest("Grok 没有返回文字内容,请重试或在 Grok 中继续。");
-        return;
-      }
-      pending.api.setStatus("");
-      if (pending.turn) {
-        Object.assign(pending.turn, { raw: pending.raw, sources: pending.sources, state: "done" });
-      } else {
-        conversation.initial = pending.raw;
-        conversation.initialSources = pending.sources;
-        saveCache(pending.url, { raw: pending.raw, sources: pending.sources });
-      }
-      cancelRun();
+      completePending();
     } else if (d.__xdbh === "grok-error") {
       failRequest("出错了:" + d.error);
     }
   });
+
+  // 主世界 hook 和后台 API 两条路径都收敛到这里。
+  function completePending() {
+    if (!pending) return;
+    if (!pending.raw.trim()) {
+      failRequest("没拿到文字内容,请重试或在 Grok 中继续。");
+      return;
+    }
+    const result = { raw: pending.raw, sources: pending.sources };
+    pending.api.setStatus("");
+    if (pending.turn) {
+      Object.assign(pending.turn, result, { state: "done" });
+    } else {
+      conversation.initial = result.raw;
+      conversation.initialSources = result.sources;
+      saveCache(pending.cacheKey || pending.url, result);
+    }
+    cancelRun();
+  }
 
   function failRequest(message) {
     if (!pending) return;
@@ -304,6 +316,70 @@
     return new URL(a.getAttribute("href"), location.origin).href.split("?")[0];
   }
 
+  function hasCompleteTweetText(tweet, text) {
+    // 折叠正文、媒体、文章/链接卡片仍需读取原帖;不能只解释截断的预览。
+    return !!text.trim() && tweet.querySelectorAll('[data-testid="tweetText"]').length > 0 &&
+      !tweet.querySelector('[data-testid="tweet-text-show-more-link"],[data-testid="tweetPhoto"],[data-testid="videoPlayer"],[data-testid="card.wrapper"],[data-testid="article-cover-image"],[data-testid="twitterArticleReadView"]');
+  }
+
+  // 提示词模板里可用的 {{author}}/{{handle}}/{{date}}/{{title}} 都从这里来。
+  function extractTweetMeta(tweet) {
+    const meta = { url: extractTweetUrl(tweet), author: "", handle: "", date: "", title: "" };
+    try {
+      const name = tweet.querySelector('[data-testid="User-Name"]');
+      if (name) {
+        const parts = Array.from(name.querySelectorAll("span")).map((s) => s.innerText).filter(Boolean);
+        const handle = parts.find((p) => p.startsWith("@"));
+        if (handle) meta.handle = handle.trim();
+        const author = parts.find((p) => p !== handle && !p.startsWith("@") && !/^[·\s]+$/.test(p));
+        if (author) meta.author = author.trim();
+      }
+      const time = tweet.querySelector("time[datetime]");
+      if (time) meta.date = time.getAttribute("datetime") || "";
+      const title = document.querySelector('[data-testid="twitter-article-title"]');
+      if (title) meta.title = (title.innerText || "").trim();
+    } catch (_) {}
+    return meta;
+  }
+
+  function templateVarsFor(tweet, text) {
+    const meta = tweet ? extractTweetMeta(tweet) : { url: "", author: "", handle: "", date: "", title: "" };
+    const expert = xdbhActiveExpert(settings);
+    const service = xdbhActiveService(settings);
+    return {
+      text: text || "",
+      url: meta.url,
+      author: meta.author,
+      handle: meta.handle,
+      date: meta.date,
+      title: meta.title,
+      expert: expert ? expert.name : "",
+      service: service ? service.name : "",
+      model: service ? service.model : "",
+      site: (window.location && window.location.hostname) || "",
+    };
+  }
+
+  // 缓存按「帖子 + 模式 + 专家 + 服务」分桶,换专家后不会拿到上一条的旧解读。
+  function cacheKeyFor(url) {
+    const expert = xdbhActiveExpert(settings);
+    const service = xdbhActiveService(settings);
+    return [url || "", settings.mode, expert ? expert.id : "",
+      settings.mode === "api" && service ? service.id : ""].join("|");
+  }
+
+  // 卡片里换专家时把选择写回设置,下次 hover 还是这个专家。
+  function persistExpert(id) {
+    if (!alive()) return;
+    try {
+      chrome.storage.local.get("settings", (res) => {
+        if (!alive()) return;
+        const stored = res && res.settings && typeof res.settings === "object" ? res.settings : {};
+        chrome.storage.local.set({ settings: { ...stored, activeExpertId: id } });
+      });
+    } catch (_) {}
+  }
+
   // ---------- 卡片 ----------
   function showCard(tweet, text) {
     closeCard();
@@ -317,7 +393,8 @@
         <header class="xdbh-card-head">
           <span class="xdbh-logo">✦</span>
           <span class="xdbh-title">大白话解读</span>
-          <span class="xdbh-badge">${settings.mode === "learn" ? "学习" : settings.mode === "demo" ? "演示" : "大白话"}</span>
+          <select class="xdbh-expert" aria-label="解读专家" title="换个解读专家"></select>
+          <span class="xdbh-badge">${MODE_LABEL[settings.mode] || settings.mode}</span>
           <button class="xdbh-close" title="关闭">×</button>
         </header>
         <div class="xdbh-card-body">
@@ -352,8 +429,25 @@
     };
     const current = conversation;
     const form = el.querySelector(".xdbh-composer");
-    form.hidden = settings.mode !== "grok";
-    el.querySelector(".xdbh-native").hidden = settings.mode !== "grok";
+    form.hidden = !isLiveMode();
+    el.querySelector(".xdbh-native").hidden = !isLiveMode();
+
+    // 卡片内直接换专家:换完按新专家重跑一次(缓存也分了桶,不会串)。
+    const expertSelect = el.querySelector(".xdbh-expert");
+    settings.experts.forEach((expert) => {
+      const option = document.createElement("option");
+      option.value = expert.id;
+      option.textContent = (expert.emoji ? expert.emoji + " " : "") + expert.name;
+      expertSelect.appendChild(option);
+    });
+    expertSelect.value = xdbhActiveExpert(settings).id;
+    expertSelect.hidden = !isLiveMode();
+    expertSelect.onchange = () => {
+      settings.activeExpertId = expertSelect.value;
+      persistExpert(expertSelect.value);
+      cancelHover();
+      run(true);
+    };
     current.input.addEventListener("focus", () => lockConversation(current));
     current.input.addEventListener("input", updateComposer);
     current.input.addEventListener("keydown", (e) => {
@@ -385,6 +479,7 @@
       api.reset();
       if (settings.mode === "learn") runLearn(tweet, text, api);
       else if (settings.mode === "demo") runDemo(text, api);
+      else if (settings.mode === "api") runApi(tweet, text, api, force);
       else runGrok(tweet, text, api, force);
     };
     card.querySelector(".xdbh-redo").onclick = () => run(true);
@@ -461,10 +556,15 @@
   async function runGrok(tweet, text, api, force) {
     const reqId = "r" + Date.now() + Math.random().toString(36).slice(2, 6);
     const tweetUrl = extractTweetUrl(tweet);
+    const expert = xdbhActiveExpert(settings);
+    const cacheKey = cacheKeyFor(tweetUrl);
+    // 主世界会把正文单独追加进去,所以这里先把 {{text}} 渲染成空串,
+    // {{url}}/{{author}} 这类占位符则就地替换。
+    const prompt = xdbhRenderTemplate(settings.prompt, templateVarsFor(tweet, ""));
 
     // 命中缓存:同一条推文秒出,不再调 Grok
     if (!force) {
-      const cached = getCache(tweetUrl);
+      const cached = getCache(cacheKey);
       if (cached) {
         api.hideSkeleton();
         api.setHtml(xdbhRenderRich(cached.raw, cached.sources));
@@ -476,14 +576,15 @@
       }
     }
 
-    pending = { reqId, api, raw: "", started: false, sources: [], url: tweetUrl };
+    pending = { reqId, api, raw: "", started: false, sources: [], url: tweetUrl, cacheKey };
     conversation.busy = true;
     updateComposer();
     api.setStatus("正在唤起 Grok…");
 
     // 武装主世界 hook:下一个 add_response 改写成我们的大白话 prompt
     window.postMessage(
-      { __xdbh: "arm", reqId, prompt: settings.prompt, tweetUrl, tweetText: text },
+      { __xdbh: "arm", reqId, prompt, tweetUrl, tweetText: text,
+        textComplete: !expert.link && hasCompleteTweetText(tweet, text) },
       "*"
     );
 
@@ -516,6 +617,97 @@
     });
   }
 
+  // ---------- 第三方 API 模式 ----------
+  // 请求走后台 Service Worker(内容脚本受 CORS 限制,直连多数接口会被拦)。
+  async function runApi(tweet, text, api, force) {
+    const service = xdbhActiveService(settings);
+    const missing = xdbhServiceReady(service);
+    if (missing) {
+      api.hideSkeleton();
+      api.setText("第三方服务还没配好:" + missing + "。打开扩展设置 →「AI 服务」补齐,再点「重新解释」。");
+      return;
+    }
+    const expert = xdbhActiveExpert(settings);
+    const tweetUrl = extractTweetUrl(tweet);
+    const cacheKey = cacheKeyFor(tweetUrl);
+
+    if (!force) {
+      const cached = getCache(cacheKey);
+      if (cached) {
+        api.hideSkeleton();
+        api.setHtml(xdbhRenderRich(cached.raw, cached.sources));
+        api.setStatus("缓存结果 · 可以继续追问");
+        conversation.initial = cached.raw;
+        conversation.initialSources = cached.sources || [];
+        updateComposer();
+        return;
+      }
+    }
+
+    const messages = [
+      { role: "system", content: service.systemPrompt || XDBH_DEFAULT_SYSTEM_PROMPT },
+      { role: "user", content: xdbhRenderTemplate(expert.prompt, templateVarsFor(tweet, text)) },
+    ];
+    const reqId = "r" + Date.now() + Math.random().toString(36).slice(2, 6);
+    pending = { reqId, api, raw: "", started: false, sources: [], url: tweetUrl, cacheKey };
+    conversation.busy = true;
+    updateComposer();
+    api.setStatus("正在调用 " + service.name + "…");
+    streamApi(reqId, api, messages, service);
+  }
+
+  function streamApi(reqId, api, messages, service) {
+    const run = activeRun;
+    let port;
+    try {
+      port = chrome.runtime.connect({ name: "xdbh-api" });
+    } catch (_) {
+      failRequest("连不上扩展后台,请在扩展管理页重新加载扩展后重试。");
+      return;
+    }
+    let settled = false;
+    const finish = (done) => {
+      if (settled) return;
+      settled = true;
+      try { port.disconnect(); } catch (_) {}
+      done();
+    };
+    if (run) {
+      run.aborts = run.aborts || new Set();
+      // 断开端口,后台的 onDisconnect 就会 abort 掉这次 fetch。
+      run.aborts.add(() => { try { port.disconnect(); } catch (_) {} });
+    }
+    port.onMessage.addListener((message) => {
+      if (!message || typeof message !== "object") return;
+      if (!pending || pending.reqId !== reqId) return;
+      if (message.type === "start") {
+        pending.started = true;
+        api.hideSkeleton();
+        api.setStatus("正在用「" + xdbhActiveExpert(settings).name + "」解读…");
+      } else if (message.type === "status") {
+        api.setStatus(message.text || "");
+      } else if (message.type === "chunk") {
+        pending.raw += message.text || "";
+        api.setHtml(xdbhRenderRich(pending.raw, pending.sources));
+      } else if (message.type === "done") {
+        finish(completePending);
+      } else if (message.type === "error") {
+        finish(() => failRequest(message.error || "请求失败"));
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      if (settled) return;
+      finish(() => {
+        if (pending && pending.reqId === reqId) failRequest("后台连接中断,请重试。");
+      });
+    });
+    try {
+      port.postMessage({ type: "start", service: { ...service }, messages, stream: true });
+    } catch (_) {
+      finish(() => failRequest("没能把请求交给后台,请重新加载扩展后重试。"));
+    }
+  }
+
   function lockConversation(current) {
     if (conversation !== current) return;
     current.locked = true;
@@ -537,14 +729,34 @@
     if (conversation !== current || current.busy || !current.initial || !alive()) return;
     const question = current.input.value.trim();
     if (!question) return;
+    if (settings.mode === "api") { submitApiFollowup(current, question); return; }
     let message;
     try { message = xdbhConversationPrompt(current, question); }
     catch (error) { current.el.querySelector(".xdbh-status").textContent = error.message; return; }
+    beginTurn(current);
+    const answer = appendTurnRow(current, question);
+    const turn = current.turns[current.turns.length - 1];
+    activeRun = { timers: new Map() };
+    const api = makeCardApi(current.el, activeRun, answer);
+    const reqId = "r" + Date.now() + Math.random().toString(36).slice(2, 6);
+    pending = { reqId, api, turn, raw: "", started: false, sources: [], url: current.url };
+    api.setStatus("正在发送追问…");
+    window.postMessage({ __xdbh: "arm", reqId, followup: true, message }, "*");
+    watchRequest(api, reqId);
+    sendViaDrawer(api, message, false);
+  }
+
+  // 追问开始前的共同准备:固定对话、停掉旧任务、清空输入框。
+  function beginTurn(current) {
     lockConversation(current);
     cancelRun();
     current.busy = true;
     current.input.value = "";
     updateComposer();
+  }
+
+  // 追问那一行「问题 + 回答」的 DOM,两条路径共用。
+  function appendTurnRow(current, question) {
     const turn = { question, raw: "", sources: [], state: "pending" };
     current.turns.push(turn);
     const row = document.createElement("section");
@@ -554,19 +766,44 @@
     user.textContent = question;
     const answer = document.createElement("div");
     answer.className = "xdbh-text xdbh-answer";
-    answer.setAttribute("aria-label", "Grok 回答");
+    answer.setAttribute("aria-label", "回答");
     answer.textContent = "正在思考…";
     row.appendChild(user);
     row.appendChild(answer);
     current.el.querySelector(".xdbh-thread").appendChild(row);
+    return answer;
+  }
+
+  function submitApiFollowup(current, question) {
+    const service = xdbhActiveService(settings);
+    const missing = xdbhServiceReady(service);
+    if (missing) {
+      current.el.querySelector(".xdbh-status").textContent = "第三方服务还没配好:" + missing;
+      return;
+    }
+    const expert = xdbhActiveExpert(settings);
+    let messages;
+    try {
+      messages = xdbhApiMessages({
+        system: service.systemPrompt || XDBH_DEFAULT_SYSTEM_PROMPT,
+        initialPrompt: xdbhRenderTemplate(expert.prompt, templateVarsFor(current.tweet, current.text)),
+        initialAnswer: current.initial,
+        turns: current.turns,
+        question,
+      });
+    } catch (error) {
+      current.el.querySelector(".xdbh-status").textContent = error.message;
+      return;
+    }
+    beginTurn(current);
+    const answer = appendTurnRow(current, question);
+    const turn = current.turns[current.turns.length - 1];
     activeRun = { timers: new Map() };
     const api = makeCardApi(current.el, activeRun, answer);
     const reqId = "r" + Date.now() + Math.random().toString(36).slice(2, 6);
-    pending = { reqId, api, turn, raw: "", started: false, sources: [], url: current.url };
+    pending = { reqId, api, turn, raw: "", started: false, sources: [], url: current.url, cacheKey: cacheKeyFor(current.url) };
     api.setStatus("正在发送追问…");
-    window.postMessage({ __xdbh: "arm", reqId, followup: true, message }, "*");
-    watchRequest(api, reqId);
-    sendViaDrawer(api, message, false);
+    streamApi(reqId, api, messages, service);
   }
 
   async function continueInGrok(current) {
@@ -803,6 +1040,7 @@
 
   function hideGrokDrawers() {
     if (!alive() || !settings.enabled || !settings.hideDrawer || !card || !pending) return;
+    if (settings.mode !== "grok") return 0; // 没驱动原生抽屉,就别动它
     let hit = 0;
     for (const sel of currentDrawerSelectors()) {
       let nodes;
