@@ -77,6 +77,20 @@ node --test tests/*.test.cjs
 
 Tests execute the actual scripts with simulated DOM, storage, and timers. They cover cancellation, drawer restoration, capture settings, streaming, follow-up context, and native draft protection. They do not replace compatibility checks against live X buttons, drawers, and APIs. After editing, reload the extension in `chrome://extensions/` and refresh X.
 
+## Automated GitHub releases
+
+Update the version in `manifest.json`, add the matching `## vVERSION` section to `CHANGELOG.md`, and commit and push the changes. Then push a matching stable version tag, for example:
+
+```bash
+git push origin main
+git tag v0.4.1
+git push origin v0.4.1
+```
+
+The Release workflow validates the version and changelog, runs tests, packages and verifies the extension, then publishes a GitHub Release with a ZIP and SHA-256 file. Uploaded assets are downloaded and compared before publishing. Failed uploads leave a draft that can be resumed by rerunning the workflow; rerunning a published release only verifies its assets. No additional token is required.
+
+Only pushed tags trigger publication. The remote tag must still resolve to the packaged commit before publication; do not move pushed release tags, use a new version instead. Use Actions → Release → Run workflow for a build-only dry run (artifacts retained for 14 days). This workflow publishes GitHub releases; Chrome Web Store submission remains a separate process.
+
 ## How it works
 
 | File | World | Responsibility |

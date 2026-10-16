@@ -77,6 +77,22 @@ node --test tests/*.test.cjs
 
 测试通过模拟 DOM、扩展存储和计时器执行实际脚本，覆盖任务取消、抽屉恢复、捕获开关、流式读取、多轮追问与原生草稿保护；不能替代登录 X 后对实际按钮、抽屉和接口的兼容性验证。修改后在 `chrome://extensions/` 重新加载扩展，并刷新 X 页面。
 
+## 自动发布 GitHub Release
+
+更新 `manifest.json` 的版本号，并在 `CHANGELOG.md` 写好对应的 `## v版本号 · 日期` 更新记录，提交并推送代码后，再推送同版本 tag。例如下一版为 0.4.1：
+
+```bash
+git push origin main
+git tag v0.4.1
+git push origin v0.4.1
+```
+
+GitHub Actions 会校验 tag 与版本号、提取该版本更新说明、运行测试、打包并核对运行文件，生成 ZIP 和 SHA-256 校验文件，然后创建正式 Release。附件上传后会下载比对，通过才公开发布；失败会保留草稿，可在 Actions 中重跑。已公开的版本重跑只核验附件，不覆盖文件。
+
+只在本地创建 tag 不会触发发布，必须推送到 GitHub。支持 `v数字.数字.数字` 正式版本；版本不一致、更新记录缺失或测试失败都会停止发布。发布前还会核对远程 tag 与打包提交一致；不要移动已推送的版本 tag，需要修改时使用新版本号。无需额外配置 Token，使用仓库自带的 `GITHUB_TOKEN`。
+
+在 Actions → Release → Run workflow 可试运行测试、打包和说明生成，产物保留 14 天，手动试运行不会创建 Release。本地也可运行 `node scripts/release-notes.cjs v0.4.0` 检查更新说明，运行 `node scripts/package.cjs` 检查安装包。这条流程负责 GitHub Release；Chrome 商店上传、提审是独立流程。
+
 ## 工作原理
 
 | 文件 | 世界 | 职责 |

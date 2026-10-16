@@ -28,7 +28,10 @@ for (const file of names) {
   const full = path.join(root, file);
   if (!fs.lstatSync(full).isFile() || fs.realpathSync(full) !== full) throw new Error('Runtime asset must be a regular file: ' + file);
 }
-execFileSync(process.execPath, ['--test', 'tests/lifecycle.test.cjs'], { cwd: root, stdio: 'inherit' });
+const tests = fs.readdirSync(path.join(root, 'tests')).filter((file) => file.endsWith('.test.cjs'))
+  .sort().map((file) => path.join('tests', file));
+if (!tests.length) throw new Error('No tests found');
+execFileSync(process.execPath, ['--test', ...tests], { cwd: root, stdio: 'inherit' });
 const outputDir = path.join(root, 'dist');
 fs.mkdirSync(outputDir, { recursive: true });
 const output = path.join(outputDir, `x-grok-dabaihua-v${manifest.version}.zip`);

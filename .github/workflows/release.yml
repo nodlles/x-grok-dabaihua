@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Validate version and prepare release notes
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="$REF_NAME"
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            tag="v$(node -p "require('./manifest.json').version")"
+          fi
+          mkdir -p dist
+          node scripts/release-notes.cjs "$tag" > dist/release-notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Test and package extension
+        run: node scripts/package.cjs
+      - name: Check archive checksum
+        working-directory: dist
+        run: sha256sum --check *.zip.sha256
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.package.outputs.tag }}
+      RELEASE_SHA: ${{ needs.package.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-package
+          path: dist
+      - name: Publish release and verify uploaded assets
+        working-directory: dist
+        run: |
+          verify_tag() {
+            local ref type sha
+            ref=$(gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object | [.type, .sha] | @tsv')
+            read -r type sha <<< "$ref"
+            while [[ "$type" == tag ]]; do
+              ref=$(gh api "repos/$GH_REPO/git/tags/$sha" --jq '.object | [.type, .sha] | @tsv')
+              read -r type sha <<< "$ref"
+            done
+            if [[ "$type" != commit || "$sha" != "$RELEASE_SHA" ]]; then
+              echo 'Remote tag no longer matches the packaged commit; refusing to publish.' >&2
+              return 1
+            fi
+          }
+          verify_tag
+          zip="x-grok-dabaihua-${RELEASE_TAG}.zip"
+          sha256sum --check "$zip.sha256"
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              # A successful rerun verifies the published assets without replacing them.
+              gh release download "$RELEASE_TAG" --pattern "$zip" --pattern "$zip.sha256" --dir verified
+              cmp "$zip" "verified/$zip"
+              cmp "$zip.sha256" "verified/$zip.sha256"
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" "$zip" "$zip.sha256" --clobber
+          gh release download "$RELEASE_TAG" --pattern "$zip" --pattern "$zip.sha256" --dir verified
+          cmp "$zip" "verified/$zip"
+          cmp "$zip.sha256" "verified/$zip.sha256"
+          verify_tag
+          gh release edit "$RELEASE_TAG" --draft=false --notes-file release-notes.md
+          gh release view "$RELEASE_TAG" --json url,isDraft,assets
