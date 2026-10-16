@@ -5,10 +5,10 @@ English · [简体中文](./README.md)
 Hover any tweet or long-form **Article** on X (Twitter) and it's automatically explained in **plain, conversational Chinese** ("大白话") — rendered right there in a slick card.
 
 <p align="center">
-  <img src="./docs/demo.gif" alt="Demo: card streaming a plain-language explanation" width="360">
-  &nbsp;&nbsp;
-  <img src="./docs/screenshot.png" alt="Plain-language card shown next to the article body" width="600">
+  <img src="./docs/demo.gif" alt="v0.4.0 demo: hover explanations, follow-up questions, expert switching, status popup, and third-party API settings" width="960">
 </p>
+
+Recorded with the actual v0.4.0 interface, a sample post, and preset responses. This demonstrates the interaction flow, not live model response times.
 
 > The clever bit: the extension **never touches any signature and stores credentials only on your machine**. It can reuse X's own already-signed Grok request, rewriting only the message into a "speak plainly" instruction before it goes out and reading back Grok's streamed answer — or it can call a third-party OpenAI-compatible API with your own key instead.
 
