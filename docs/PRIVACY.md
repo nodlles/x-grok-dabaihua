@@ -1,6 +1,6 @@
 # 隐私政策 · Privacy Policy
 
-最后更新 / Last updated: 2026-10-15
+最后更新 / Last updated: 2026-11-09
 
 ## 简体中文
 
@@ -13,12 +13,15 @@
 - 使用「第三方 API」引擎时，同样的内容（构建好的提示词、系统提示词、追问的多轮消息，以及你配置的 API Key）会由扩展后台发给你自己填写的接口地址，不再经过 X/Grok。发送哪些内容由你选择的专家提示词决定。接口地址、Key、模型和额度都由你自己掌控；该接口如何处理收到的数据，受其运营方的政策约束，与开发者无关。扩展只在你点击「保存并授权域名」或「测试连接」时申请对应域名的访问权限，不会主动联系任何未授权的域名。
 - 扩展复用 X 页面已有的登录请求，不要求你向开发者提供密码或 API 密钥，不建立独立的登录系统。页面请求可能携带 X 的认证信息；扩展不会把这些信息发送给开发者。
 - 扩展根据悬停、点击和输入来提供功能，不记录跨网站浏览历史，没有分析或广告 SDK，没有开发者的数据接收服务器。帖子和问答本身可能含有姓名、账号或其他个人信息，请按你愿意提供给 X/Grok 的范围使用。
+- 「附带当前页评论」默认关闭。你主动开启后，扩展会在原帖详情页读取当前已加载的回复（最多 8 条、单条 500 字、评论块总计 4000 字），并随原帖正文、初次解读和追问一起发给 X/Grok，或发给你自己配置的第三方 API 接口。扩展只读当前页面已经渲染出来的内容：不滚动、不请求 GraphQL 或其他接口去加载更多，因此不保证覆盖全部评论，也不代表这些回复完整、准确或已核实；回复由其他用户发布，可能包含第三方的个人信息。关闭开关后，请求里不会出现任何评论内容。
 
 ### 本地保存与删除
 
 设置、解读专家提示词以及以「帖子 + 模式 + 专家 + 服务」为索引的初次解读缓存保存在浏览器的 `chrome.storage.local`。第三方 API 服务的接口地址、模型和 API Key 也保存在这里，仅存于本机，不会随打包或分享泄露，也不会发送给开发者。缓存最多保留 80 条，超过 24 小时不再作为有效解读使用；这不是定时从磁盘删除的承诺。卸载扩展可清除缓存及其他扩展本地数据。追问对话保存在当前页面内存中，关闭卡片时清除，不写入解读缓存。
 
 请求捕获默认关闭，只有扩展启用、选择学习模式并手动开启捕获时才运行。它最多在本机保存 30 条 Grok 请求/响应调试记录，可包含请求地址、请求正文、响应样本、时间及请求头。已知敏感请求头（如 Authorization、Cookie、CSRF）会打码，但正文、响应及其他字段不会自动脱敏，可能包含个人聊天内容。可在设置页清空捕获记录。记录不会自动发给开发者；复制或主动分享前请检查并删除敏感内容。
+
+设置页的「复制此条」只把选中的那一条记录写入本机剪贴板，不额外保存、不上传，也不改变已有记录；剪贴板内容可能被同一台电脑上的其他程序和用户读取，粘贴到别处前请自行检查。复制失败时按钮会如实显示失败，扩展不会改用其他通道传输这些内容。
 
 本地存储不是扩展额外加密的保险箱。同一浏览器配置文件的使用者可能访问这些数据。卸载扩展会移除其本地存储；X/Grok 已收到的数据不会因此被删除，应通过 X/Grok 的设置和相关政策管理。
 
@@ -40,11 +43,15 @@ With the “third-party API” engine, the same content (the rendered prompt, th
 
 The extension reuses X's existing authenticated requests, which may carry X authentication information. It does not ask you to give the developer a password or API key or send credentials to the developer. Hover, click and input interactions enable the visible features; there is no cross-site browsing-history log, analytics/advertising SDK or developer-operated data collection server. Posts and conversations may themselves contain names, usernames or other personal information.
 
+“Include current-page replies” is off by default. If you turn it on, the extension reads the replies already loaded on the original post's status page (at most 8 replies, 500 characters each, 4000 characters in total) and sends them together with the post text, initial explanation and follow-ups to X/Grok or to the third-party API endpoint you configured. It reads only what the current page has already rendered: it does not scroll and does not call GraphQL or any other endpoint to load more, so the block is not guaranteed to cover the whole thread and is not a claim that those replies are complete, accurate or verified. Replies are written by other users and may contain third parties' personal information. With the switch off, no reply text enters any request.
+
 ### Local storage and deletion
 
 Settings, expert prompts and initial explanations indexed by post + mode + expert + service are saved in `chrome.storage.local`. The endpoint URL, model and API key of third-party API services are stored there too, local to your machine only; they are not exposed by packaging or sharing and are not sent to the developer. The cache holds up to 80 entries; entries older than 24 hours are not reused, but are not necessarily deleted from disk at that moment. Uninstall the extension to remove the cache and other extension storage. Follow-up conversations stay in page memory, are cleared when the card closes and are not written to the explanation cache.
 
 Request capture is off by default. It runs only when the extension is enabled, learning mode is selected and capture is explicitly enabled. Up to 30 local Grok debugging records may contain request URLs, bodies, response samples, timestamps and headers. Known sensitive headers such as Authorization, Cookie and CSRF are redacted, but bodies, responses and other fields are not automatically sanitized and may contain personal conversations. Clear these records in Settings. They are not automatically sent to the developer; review and redact them before copying or voluntarily sharing them.
+
+“Copy this one” in Settings writes only the selected record to your local clipboard; it stores nothing extra, uploads nothing and leaves existing records untouched. Clipboard contents may be readable by other programs and users on the same machine — review them before pasting elsewhere. If the copy fails, the button says so; the extension does not fall back to any other channel for that content.
 
 Local storage is not additionally encrypted by this extension and may be accessible to users of the same browser profile. Uninstalling removes extension storage, but does not delete data already received by X/Grok. Manage that data through X/Grok and their policies.
 

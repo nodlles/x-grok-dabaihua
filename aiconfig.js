@@ -321,6 +321,8 @@ function xdbhNormalizeSettings(raw) {
     mode: XDBH_MODES.includes(input.mode) ? input.mode : "grok",
     hoverDelay: Number.isFinite(delay) ? Math.min(5000, Math.max(200, Math.round(delay))) : 1200,
     capture: !!input.capture,
+    // 附带评论默认关闭：只在第三方 API 模式、原帖详情页生效。
+    includeReplies: input.includeReplies === true,
     hideDrawer: input.hideDrawer !== false,
     drawerSelector: String(input.drawerSelector || ""),
     theme: String(input.theme || "graphite"),

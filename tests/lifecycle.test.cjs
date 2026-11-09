@@ -72,8 +72,70 @@ class Element {
   click() { this.clicks = (this.clicks || 0) + 1; this.onclick?.(); }
 }
 
-function contentHarness(settings = {}, cached = null) {
+// 造一条足够像 X DOM 的推文/回复 article：正文、status id、作者、折叠入口都可控。
+function tweetArticle(options = {}) {
+  const article = new Element();
+  const state = {
+    id: String(options.id || '1'),
+    text: options.text || '',
+    showMore: !!options.showMore,
+    handle: options.handle || '',
+    promoted: !!options.promoted,
+  };
+  const showMoreEl = new Element();
+  showMoreEl.attrs.href = '/user/status/' + state.id;
+  showMoreEl.onclick = () => {
+    if (options.onExpand) {
+      options.onExpand({
+        article, showMoreEl,
+        full(value) { state.text = value; state.showMore = false; article.innerText = value; },
+        navigate(path, articles) { options.onNavigate && options.onNavigate(path, articles); },
+      });
+    }
+  };
+  article.closest = (sel) => sel && sel.includes('placementTracking') ? null : article;
+  article.querySelectorAll = (sel) => {
+    if (sel.includes('tweetText')) return state.text ? [{ innerText: state.text }] : [];
+    if (sel.includes('User-Name')) {
+      return state.handle
+        ? { querySelectorAll: () => [{ innerText: 'Display Name' }, { innerText: '@' + state.handle }] }
+        : null;
+    }
+    if (sel.includes('placementTracking')) return state.promoted ? [new Element()] : [];
+    return [];
+  };
+  article.querySelector = (sel) => {
+    if (sel.includes('tweet-text-show-more-link')) return state.showMore ? showMoreEl : null;
+    if (sel.includes('time[datetime]')) return null;
+    if (sel.includes('User-Name')) {
+      return state.handle
+        ? { querySelectorAll: () => [{ innerText: 'Display Name' }, { innerText: '@' + state.handle }] }
+        : null;
+    }
+    if (sel.includes('/status/')) return { getAttribute: () => '/user/status/' + state.id };
+    if (sel.includes('placementTracking')) return state.promoted ? new Element() : null;
+    return null;
+  };
+  article.innerText = state.text;
+  article.tweetState = state;
+  return article;
+}
+
+function apiPrompt(h, index = 0) {
+  return h.ports[index].sent[0].messages[1].content;
+}
+
+function finishApi(h, text = 'answer') {
+  const port = h.ports.at(-1);
+  port.push({ type: 'start' });
+  port.push({ type: 'chunk', text });
+  port.push({ type: 'done' });
+  return port;
+}
+
+function contentHarness(settings = {}, cached = null, env = {}) {
   const timers = clock(), events = {}, messages = [], cards = [], writes = [], ports = [];
+  const state = { pathname: env.pathname || '/home', articles: env.articles || [] };
   const drawer = new Element();
   drawer.style.setProperty('position', 'absolute');
   drawer.style.setProperty('left', '30px', 'important');
@@ -93,7 +155,10 @@ function contentHarness(settings = {}, cached = null) {
     createElement: () => new Element(),
     addEventListener: (name, fn) => { events[name] = fn; },
     querySelector: () => null,
-    querySelectorAll: (sel) => /drawer/i.test(sel) ? [drawer] : [],
+    querySelectorAll: (sel) => {
+      if (sel.includes('article[data-testid="tweet"]')) return state.articles;
+      return /drawer/i.test(sel) ? [drawer] : [];
+    },
   };
   const window = {
     innerWidth: 1200, innerHeight: 900,
@@ -123,7 +188,12 @@ function contentHarness(settings = {}, cached = null) {
   };
   const context = vm.createContext({ window, document, chrome, ...timers, console: { log() {}, warn() {} },
     MutationObserver: class { constructor(fn) { observer = fn; } observe() {} disconnect() {} },
-    location: { origin: 'https://x.com' }, URL,
+    location: {
+      origin: 'https://x.com',
+      hostname: 'x.com',
+      pathname: state.pathname,
+      get href() { return 'https://x.com' + state.pathname; },
+    }, URL,
     resolveTheme: (t) => t, positionCard() {}, clampCard() {}, makeDraggable() {},
     getCache: () => cached, saveCache: (url, data) => writes.push({ url, ...data }), xdbhRenderRich: (raw) => raw,
   });
@@ -132,7 +202,13 @@ function contentHarness(settings = {}, cached = null) {
   vm.runInContext(source('content.js'), context);
   return {
     ...timers, drawer, button, tweet, messages, cards, writes, ports, document,
-    async hover() { await timers.advance(0); events.mouseover({ target: tweet }); await timers.advance(1200); },
+    async hover(target = tweet) { await timers.advance(0); events.mouseover({ target }); await timers.advance(1200); },
+    place(pathname, articles) {
+      state.pathname = pathname;
+      context.location.pathname = pathname;
+      if (articles) state.articles = articles;
+    },
+    setArticles(articles) { state.articles = articles; },
     async mutate() { observer(); await timers.advance(16); },
     invalidate() { chrome.runtime.id = null; },
     mouseover(target = tweet) { events.mouseover({ target }); },
@@ -184,9 +260,13 @@ function optionsHarness(options = {}) {
     return elements.get(id);
   };
   const document = { getElementById: el, createElement: () => new Element(), addEventListener() {} };
+  // 默认把复制内容记到 clipboardText；测试可传入 clipboardWrite（注入失败/拒绝），
+  // 或者 noClipboard 模拟没有剪贴板接口的环境。
+  const clipboardWrite = options.clipboardWrite || ((text) => { clipboardText.push(text); return Promise.resolve(); });
+  const navigator = options.noClipboard ? {} : { clipboard: { writeText: (text) => clipboardWrite(text) } };
   const context = vm.createContext({
     document,
-    navigator: { clipboard: { writeText: (text) => { clipboardText.push(text); return Promise.resolve(); } } },
+    navigator,
     console: { log() {}, warn() {} },
     ...timers, URL,
     chrome: {
@@ -1095,6 +1175,272 @@ test('api followups send a real multi-turn message array instead of a JSON blob'
   assert.equal(h.messages.some((m) => m.__xdbh === 'arm'), false);
 });
 
+test('a collapsed long tweet never sends its truncated preview before the user expands it', async () => {
+  const preview = 'This is only the truncated half of a long tweet';
+  const full = preview + ' — and this is the rest that only appears after Show more.';
+  const article = tweetArticle({
+    id: 900, text: preview, showMore: true,
+    onExpand: ({ full: expand }) => expand(full),
+  });
+  const h = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/home', articles: [article] },
+  );
+
+  await h.hover(article);
+  assert.equal(h.ports.length, 0, 'hover must not fire an API request');
+  const card = h.cards.at(-1);
+  assert.equal(card.querySelector('.xdbh-notice').hidden, false);
+  assert.match(card.querySelector('.xdbh-notice-text').textContent, /折叠预览/);
+  const button = card.querySelector('.xdbh-notice-btn');
+  assert.equal(button.hidden, false);
+  assert.match(button.textContent, /展开全文并继续/);
+  assert.match(card.querySelector('.xdbh-status').textContent, /还没有发出请求/);
+
+  button.click();
+  await h.advance(1000);
+  assert.equal(h.ports.length, 1);
+  const sent = apiPrompt(h);
+  assert.match(sent, /the rest that only appears after Show more/);
+
+  finishApi(h, '初次解读');
+  await h.advance(0);
+  h.question('接着解释');
+  h.submit();
+  await h.advance(0);
+  const followup = h.ports.at(-1).sent[0].messages;
+  assert.match(followup[1].content, /the rest that only appears after Show more/);
+});
+
+test('a cached answer never bypasses expansion for a folded tweet', async () => {
+  const article = tweetArticle({ id: 905, text: 'folded preview only', showMore: true });
+  const h = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] },
+    { raw: 'an older answer based on a preview', sources: [] },
+    { pathname: '/home', articles: [article] },
+  );
+
+  await h.hover(article);
+  assert.equal(h.ports.length, 0);
+  assert.equal(h.cards.at(-1).querySelector('.xdbh-text').textContent, '');
+  assert.equal(h.cards.at(-1).querySelector('.xdbh-notice').hidden, false);
+  assert.doesNotMatch(h.cards.at(-1).querySelector('.xdbh-text').textContent, /older answer/);
+});
+
+test('a failed expansion makes no request and offers a retry instead of guessing', async () => {
+  const preview = 'Still only a folded preview half-sentence';
+  const article = tweetArticle({ id: 910, text: preview, showMore: true });
+  const h = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/home', articles: [article] },
+  );
+
+  await h.hover(article);
+  const button = h.cards.at(-1).querySelector('.xdbh-notice-btn');
+  button.click();
+  await h.advance(9000);
+
+  assert.equal(h.ports.length, 0, 'a timeout must not fall back to the preview');
+  assert.match(h.cards.at(-1).querySelector('.xdbh-notice-text').textContent, /手动点开|手动展开/);
+  assert.match(button.textContent, /重试展开/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-status').textContent, /未发出请求/);
+});
+
+test('an SPA jump to the status page reads the full main post from the new DOM', async () => {
+  const preview = 'Folded preview before opening the detail page';
+  const full = preview + ' plus the complete long-form body rendered on the status page.';
+  let h;
+  const detail = tweetArticle({ id: 920, text: full });
+  const timeline = tweetArticle({
+    id: 920, text: preview, showMore: true,
+    onNavigate: (path, articles) => h.place(path, articles),
+    onExpand: ({ navigate }) => navigate('/bob/status/920', [detail]),
+  });
+  h = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/home', articles: [timeline] },
+  );
+
+  await h.hover(timeline);
+  h.cards.at(-1).querySelector('.xdbh-notice-btn').click();
+  await h.advance(1000);
+
+  assert.equal(h.ports.length, 1);
+  const sent = apiPrompt(h);
+  assert.match(sent, /complete long-form body rendered on the status page/);
+  assert.doesNotMatch(sent, /Folded preview before opening the detail page$/);
+});
+
+test('replies on the original status page are labelled and reused for followups', async () => {
+  const main = tweetArticle({ id: 1000, text: 'Four words only', handle: 'alice' });
+  const pinned = tweetArticle({ id: 999, text: 'unrelated pinned post', handle: 'pin' });
+  const first = tweetArticle({ id: 1001, text: 'reply one gives context', handle: 'bob' });
+  const second = tweetArticle({ id: 1002, text: 'reply two adds more', handle: 'carol' });
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1000', articles: [pinned, main, first, second] },
+  );
+
+  await h.hover(main);
+  const initialPrompt = apiPrompt(h);
+  assert.match(initialPrompt, /Four words only/);
+  assert.match(initialPrompt, /【当前页已加载的评论 · 补充背景】/);
+  assert.match(initialPrompt, /@bob: reply one gives context/);
+  assert.match(initialPrompt, /@carol: reply two adds more/);
+  assert.doesNotMatch(initialPrompt, /unrelated pinned post/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-learn-note').textContent, /仅包含当前页已加载的 2 条评论/);
+
+  finishApi(h, '初次解读');
+  await h.advance(0);
+  h.question('评论里还补充了什么?');
+  h.submit();
+  await h.advance(0);
+
+  const followup = h.ports.at(-1).sent[0].messages;
+  assert.equal(followup[1].content, initialPrompt, 'followup must carry the exact same comment context');
+  assert.match(followup[3].content, /评论里还补充了什么/);
+});
+
+test('the timeline never treats neighbouring posts as replies', async () => {
+  const main = tweetArticle({ id: 1100, text: 'main tweet on the timeline', handle: 'alice' });
+  const neighbour = tweetArticle({ id: 1101, text: 'unrelated timeline neighbour', handle: 'neighbour' });
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/home', articles: [main, neighbour] },
+  );
+
+  await h.hover(main);
+  const sent = apiPrompt(h);
+  assert.doesNotMatch(sent, /unrelated timeline neighbour/);
+  assert.doesNotMatch(sent, /【当前页已加载的评论/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-learn-note').textContent, /不在原帖详情页/);
+});
+
+test('hovering a reply on the status page does not attach the thread as comments', async () => {
+  const main = tweetArticle({ id: 1200, text: 'original post', handle: 'alice' });
+  const reply = tweetArticle({ id: 1201, text: 'a reply that is not the original post', handle: 'bob' });
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1200', articles: [main, reply] },
+  );
+
+  await h.hover(reply);
+  const sent = apiPrompt(h);
+  assert.match(sent, /a reply that is not the original post/);
+  assert.doesNotMatch(sent, /【当前页已加载的评论/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-learn-note').textContent, /不是原帖/);
+});
+
+test('an empty comment section is reported honestly and sends no comment block', async () => {
+  const main = tweetArticle({ id: 1300, text: 'no comments loaded yet', handle: 'alice' });
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1300', articles: [main] },
+  );
+
+  await h.hover(main);
+  assert.doesNotMatch(apiPrompt(h), /【当前页已加载的评论/);
+  assert.match(h.cards.at(-1).querySelector('.xdbh-learn-note').textContent, /还没有已加载的评论/);
+});
+
+test('comments are off by default and never enter the api request when disabled', async () => {
+  const main = tweetArticle({ id: 1400, text: 'short original post', handle: 'alice' });
+  const reply = tweetArticle({ id: 1401, text: 'context reply that should stay out', handle: 'bob' });
+  const h = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1400', articles: [main, reply] },
+  );
+
+  await h.hover(main);
+  const sent = apiPrompt(h);
+  assert.doesNotMatch(sent, /context reply that should stay out/);
+  assert.doesNotMatch(sent, /【当前页已加载的评论/);
+});
+
+test('loading more comments changes the cache key, and the on/off switch stays separate', async () => {
+  const main = tweetArticle({ id: 1500, text: 'cache me', handle: 'alice' });
+  const first = tweetArticle({ id: 1501, text: 'first loaded reply', handle: 'bob' });
+  const second = tweetArticle({ id: 1502, text: 'second loaded reply', handle: 'carol' });
+  const third = tweetArticle({ id: 1503, text: 'newly loaded reply', handle: 'dave' });
+  const articles = [main, first, second];
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1500', articles },
+  );
+
+  await h.hover(main);
+  finishApi(h, 'first answer');
+  await h.advance(0);
+  const withTwo = h.writes.at(-1).url;
+  assert.match(withTwo, /replies:/);
+
+  h.setArticles([main, first, second, third]);
+  h.redo();
+  await h.advance(0);
+  finishApi(h, 'second answer');
+  await h.advance(0);
+  const withThree = h.writes.at(-1).url;
+  assert.notEqual(withThree, withTwo);
+
+  const off = contentHarness(
+    { mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1500', articles: [main, first, second, third] },
+  );
+  await off.hover(main);
+  finishApi(off, 'off answer');
+  await off.advance(0);
+  const withoutReplies = off.writes.at(-1).url;
+  assert.doesNotMatch(withoutReplies, /replies:/);
+  assert.notEqual(withoutReplies, withThree);
+});
+
+test('reply context caps count, per-reply length and total size while de-duplicating', async () => {
+  const main = tweetArticle({ id: 1600, text: 'limits test main post', handle: 'alice' });
+  const long = 'L'.repeat(800);
+  const replies = [
+    tweetArticle({ id: 1601, text: 'duplicate reply', handle: 'dup' }),
+    tweetArticle({ id: 1601, text: 'duplicate reply', handle: 'dup' }),
+    tweetArticle({ id: 1602, text: 'promoted reply', handle: 'ad', promoted: true }),
+    tweetArticle({ id: 1603, text: '   ', handle: 'blank' }),
+    tweetArticle({ id: 1604, text: long, handle: 'long' }),
+  ];
+  for (let i = 5; i <= 12; i++) replies.push(tweetArticle({ id: 1600 + i, text: 'unique reply ' + i, handle: 'u' + i }));
+  const h = contentHarness(
+    { mode: 'api', includeReplies: true, services: [{ id: 'xai', apiKey: 'k' }] }, null,
+    { pathname: '/alice/status/1600', articles: [main, ...replies] },
+  );
+
+  await h.hover(main);
+  const prompt = apiPrompt(h);
+  const block = prompt.slice(prompt.indexOf('【当前页已加载的评论'));
+  assert.ok(block.length <= 4000, 'comment block must stay within 4000 characters');
+  assert.equal((block.match(/duplicate reply/g) || []).length, 1);
+  assert.doesNotMatch(block, /promoted reply/);
+  assert.ok(block.includes('L'.repeat(499)));
+  assert.ok(!block.includes('L'.repeat(500)));
+  const lines = block.split('\n').filter((line) => /^\d+\. /.test(line));
+  assert.ok(lines.length <= 8);
+  for (const line of lines) {
+    const body = line.replace(/^\d+\. (@\S+: )?/, '');
+    assert.ok(body.length <= 500, body.length + ' must fit the per-reply limit');
+  }
+  const note = h.cards.at(-1).querySelector('.xdbh-learn-note').textContent;
+  assert.ok(Number(note.match(/已加载的 (\d+) 条评论/)[1]) <= 8);
+});
+
+test('the settings page keeps comment context off by default and can turn it on', async () => {
+  const off = optionsHarness();
+  await off.load();
+  assert.equal(off.el('includeReplies').checked, false);
+
+  const on = optionsHarness();
+  await on.load();
+  on.el('includeReplies').checked = true;
+  on.el('includeReplies').onchange({ target: on.el('includeReplies') });
+  await on.load();
+  assert.equal(on.last().includeReplies, true);
+});
+
 test('closing the card aborts the in-flight api request', async () => {
   const h = contentHarness({ mode: 'api', services: [{ id: 'xai', apiKey: 'k' }] });
   await h.hover();
@@ -1253,6 +1599,84 @@ test('the settings page renders captured requests and can clear them', async () 
   h.el('clear').click();
   await h.load();
   assert.equal(h.writes.at(-1).captures.length, 0);
+});
+
+test('copying one captured request copies only that record as pretty JSON', async () => {
+  const first = { method: 'POST', url: 'https://x.com/i/api/graphql/one', reqBody: '{"q":"1"}', respSample: '{"a":1}', respLen: 7, ts: 1750000000000 };
+  const second = { method: 'POST', url: 'https://x.com/i/api/graphql/two', reqBody: '{"q":"2"}', respSample: '{"b":2}', respLen: 9, ts: 1750000001000 };
+  const h = optionsHarness({ captures: [first, second] });
+  await h.load();
+  const items = h.el('caps').childNodes;
+  assert.equal(items.length, 2);
+  const buttons = items.map((item) => item.childNodes[0].childNodes[0]);
+  for (const btn of buttons) assert.match(btn.className, /cap-copy/);
+  assert.equal(buttons[1].textContent, '复制此条');
+
+  buttons[1].click();
+  await h.load();
+  assert.equal(h.clipboardText.length, 1);
+  const copied = h.clipboardText[0];
+  assert.equal(copied, JSON.stringify(second, null, 2));
+  assert.doesNotMatch(copied, /graphql\/one/);
+  assert.match(copied, /\n  "url"/);
+  assert.equal(buttons[1].textContent, '已复制 ✓');
+  assert.equal(buttons[0].textContent, '复制此条');
+  // 短反馈会自动退回原本文案。
+  await h.advance(1400);
+  assert.equal(buttons[1].textContent, '复制此条');
+});
+
+test('copying everything still hands over the whole array', async () => {
+  const first = { method: 'GET', url: 'https://x.com/i/api/graphql/one', ts: 1750000000000 };
+  const second = { method: 'POST', url: 'https://x.com/i/api/graphql/two', ts: 1750000001000 };
+  const h = optionsHarness({ captures: [first, second] });
+  await h.load();
+  h.el('copy').click();
+  await h.load();
+  assert.equal(h.clipboardText.length, 1);
+  assert.equal(h.clipboardText[0], JSON.stringify([first, second], null, 2));
+  assert.equal(h.el('copy').textContent, '已复制 ✓');
+});
+
+test('an empty capture list offers no per-record copy button', async () => {
+  const h = optionsHarness({ captures: [] });
+  await h.load();
+  assert.equal(h.el('caps').childNodes.length, 0);
+  assert.match(h.el('caps').innerHTML, /还没有捕获到任何 Grok 请求/);
+  h.el('copy').click();
+  await h.load();
+  assert.equal(h.clipboardText.length, 0);
+  assert.doesNotMatch(h.el('copy').textContent, /已复制/);
+});
+
+test('a rejected clipboard write reports failure and never claims success', async () => {
+  const seen = [];
+  const h = optionsHarness({
+    captures: [{ method: 'POST', url: 'https://x.com/i/api/graphql/abc', reqBody: '{"q":"x"}', ts: 1750000000000 }],
+    clipboardWrite: (text) => { seen.push(text); return Promise.reject(new Error('denied')); },
+  });
+  await h.load();
+  const btn = h.el('caps').childNodes[0].childNodes[0].childNodes[0];
+  btn.click();
+  await h.load();
+  assert.equal(seen.length, 1);
+  assert.match(btn.textContent, /复制失败/);
+  assert.doesNotMatch(btn.textContent, /已复制/);
+  h.el('copy').click();
+  await h.load();
+  assert.equal(seen.length, 2);
+  assert.match(h.el('copy').textContent, /复制失败/);
+  assert.doesNotMatch(h.el('copy').textContent, /已复制/);
+});
+
+test('without a clipboard API the copy buttons say so instead of pretending', async () => {
+  const h = optionsHarness({ noClipboard: true, captures: [{ method: 'POST', url: 'https://x.com/i/api/graphql/abc', ts: 1750000000000 }] });
+  await h.load();
+  const btn = h.el('caps').childNodes[0].childNodes[0].childNodes[0];
+  btn.click();
+  await h.load();
+  assert.match(btn.textContent, /复制失败/);
+  assert.doesNotMatch(btn.textContent, /已复制/);
 });
 
 test('the toolbar popup reports the live engine, expert and service', async () => {

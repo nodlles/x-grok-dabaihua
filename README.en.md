@@ -19,6 +19,8 @@ Recorded with the actual v0.4.0 interface, a sample post, and preset responses. 
 - **X long-form Articles supported**:
   - Article cards in the timeline — keeps X's analysis context so the backend reads the article body as usual;
   - Article detail pages (no inline Grok button) — grabs the full text from the page and drives the Grok drawer to summarize it.
+- **Folded long posts are expanded first**: the timeline only renders a truncated preview, and that preview is all the DOM holds. In third-party API mode the extension never sends that preview as if it were the full post: the card explains why, and waits for you to click “Expand and continue” before it opens X’s “Show more” (or follows the SPA to the status page) and reads the complete body. A failed expansion sends nothing and does not fall back to a cached answer; expand manually and retry.
+- **Optional current-page replies**: off by default, third-party API mode only. When enabled, replies already loaded on the original post’s status page are attached as background context; at most 8 replies, 500 characters each, 4000 characters in total, read from the rendered DOM only — no scrolling, no extra requests, no auto-loading more. The initial request and follow-ups share the same reply block, and reply changes get their own cache bucket.
 - **Four modes**:
   - `grok` real plain-language (default; reuses your X session)
   - `api` third-party API — call any OpenAI-compatible endpoint with your own key
@@ -28,7 +30,7 @@ Recorded with the actual v0.4.0 interface, a sample post, and preset responses. 
 - **Explanation experts**: built-in plain-language, technical breakdown, translate + explain, key points, and critique, plus a free-form custom one. Prompts follow a "scope + fidelity constraints + no fabrication" shape and support `{{text}}`, `{{url}}`, `{{author}}` and other placeholders, with a live preview in Settings. Switch experts right from the card header.
 - **Follow-up questions**: ask inside the card after an explanation, with each answer appended to the conversation. Cached explanations support follow-ups too.
 - **Continue in Grok**: prepares a draft in X’s native Grok input with the original post, explanation, sources, and completed turns for you to edit and send.
-- **Result cache**: keyed by post + mode + expert + service, so switching experts or services never mixes results; hit "Re-explain" to force a refresh.
+- **Result cache**: keyed by post + mode + expert + service, so switching experts or services never mixes results; with current-page replies enabled the reply fingerprint is part of the key, so changed replies trigger a fresh request; hit "Re-explain" to force a refresh.
 - **Themes**: graphite / light / ocean / neon / follow system.
 - **Hide native drawer**: hides X's own Grok drawer only while explaining, keeping its native position to prevent autofocus from scrolling the timeline to the top; restores its original inline styles on completion, error, timeout, or card close.
 
@@ -48,15 +50,23 @@ Recorded with the actual v0.4.0 interface, a sample post, and preset responses. 
 
 Clicking the extension icon opens a small popup that reports the current state (engine, expert, service, readiness) with a single enable switch. Use "Open full settings" there, or open "Options" from `chrome://extensions`, for the detailed configuration:
 
-- **Basics**: on/off, mode (Grok / third-party API / demo / learn), hover delay, theme, whether to hide the native drawer, and (if auto-detection misses) a manual drawer selector.
+- **Basics**: on/off, mode (Grok / third-party API / demo / learn), hover delay, theme, whether to hide the native drawer, whether to include current-page replies, and (if auto-detection misses) a manual drawer selector.
 - **Experts**: pick an expert, edit its prompt, restore the default, and preview exactly what will be sent to the model.
 - **AI services**: add or remove services, set URL, API key, model, temperature and system prompt; "Save and authorize domain" requests the permission and "Test connection" sends a `ping`.
 
 API keys live only in local `chrome.storage`; they are never sent to the developer and are not exposed by packaging or sharing.
 
-Request capture is off by default. It requires the extension to be enabled, learning mode selected, and the capture switch enabled. Existing switch preferences are preserved, but capture is inactive in plain-language and demo modes. Up to 30 records are stored locally, including request bodies and response samples that may contain chat content. View, copy, or clear them in Settings. Check records before sharing: header redaction does not sanitize the entire record.
+Request capture is off by default. It requires the extension to be enabled, learning mode selected, and the capture switch enabled. Existing switch preferences are preserved, but capture is inactive in plain-language and demo modes. Up to 30 records are stored locally, including request bodies and response samples that may contain chat content. View, copy, or clear them in Settings. Each record has its own "Copy this one" button that copies only that record as pretty-printed JSON; the button sits outside the scrolling area so long bodies never push it away. When the clipboard rejects the write or no clipboard API exists, the button reports the failure instead of claiming success. Check records before sharing: header redaction does not sanitize the entire record.
 
 Closing the card, re-explaining, or changing modes stops the old task's automated clicks, waits, and card reader. Requests already sent by X may continue and consume quota; the extension does not abort X's own requests. Waiting ends after 10 seconds without an initial response or 120 seconds overall.
+
+## Current-page replies
+
+- The switch lives under Basics in Settings, is off by default and only applies to third-party API mode.
+- When enabled, replies are read only while you hover the original post **on its own status page** (the address bar shows that post’s `/status/...`) — and only the replies already rendered after the main post. Nothing scrolls, no X GraphQL call is made, nothing loads more, so the block is “what this page happens to have loaded”, not the full thread.
+- Limits: at most 8 replies, 500 characters each, 4000 characters in total, de-duplicated by status id. Anything beyond that is cut, and the note under the card states how many replies were actually attached — or that the page had none loaded yet.
+- Replies are attached as a background paragraph after the post body, with a note that they are not the author’s words and may be incomplete. The initial request and follow-ups share the same block; changed replies or a switched toggle use a different cache bucket.
+- Replies are other people’s content and may contain personal information. Leave the switch off and no reply text enters any request.
 
 ## Follow-up questions
 

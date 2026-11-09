@@ -257,8 +257,18 @@
   .preview-label { margin: var(--s4) 0 0; font-size: var(--fs-sm); color: var(--ink-3); }
 
   /* 捕获记录 */
+  .cap-item { margin-top: var(--s3); }
+  /* 复制按钮放在滚动区外层，长正文滚动时也不会跟着滑走。 */
+  .cap-head { display: flex; align-items: center; justify-content: flex-end; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
+  .cap-head .btn {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: var(--fs-xs);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
   .cap {
-    margin-top: var(--s3);
+    margin-top: var(--s1);
     padding: var(--s3) var(--s4);
     background: var(--sunken);
     border: 1px solid var(--line);
@@ -422,6 +432,16 @@
             </div>
           </div>
 
+          <div class="row">
+            <div class="row-text">
+              <h3><label for="includeReplies">附带当前页评论</label></h3>
+              <p>仅第三方 API 模式：在原帖详情页把当前已加载的回复作为补充背景，一起交给模型。不会自动滚动或加载更多，首发和追问用同一份评论。默认关闭。</p>
+            </div>
+            <div class="row-control">
+              <span class="switch"><input type="checkbox" id="includeReplies" /></span>
+            </div>
+          </div>
+
           <div class="stack">
             <label class="lbl" for="drawerSelector">自定义抽屉选择器</label>
             <input type="text" id="drawerSelector" placeholder='例如 [data-testid="GrokDrawer"]' spellcheck="false" />
@@ -581,6 +601,7 @@
         <div class="privacy">
           <p>Grok 引擎下，悬停解读和追问会把帖子文本、链接与相关问答发给 X/Grok，用的是你的 Grok 额度。第三方 API 引擎下，同样的内容发给你自己配置的接口，用你自己的额度。设置、API Key 和解读缓存都只留在本机。</p>
           <p>请求捕获默认关闭，开启后也只在学习模式里生效。关掉捕获不会删除已有记录，要清空请点上面的「清空」。</p>
+          <p>「附带当前页评论」默认关闭。开启后只读取原帖详情页当前 DOM 中已经加载的回复，不自动滚动、不请求更多数据；评论会和正文一起发给所选 AI 服务。</p>
           <a href="https://github.com/nodlles/x-grok-dabaihua/blob/main/docs/PRIVACY.md" target="_blank" rel="noopener noreferrer">阅读完整隐私说明</a>
         </div>
       </section>

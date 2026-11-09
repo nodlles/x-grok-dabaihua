@@ -76,6 +76,7 @@ function save(showTip) {
 function applyBasicUI() {
   $("enabled").checked = settings.enabled;
   $("capture").checked = settings.capture;
+  $("includeReplies").checked = settings.includeReplies;
   $("hideDrawer").checked = settings.hideDrawer;
   $("drawerSelector").value = settings.drawerSelector || "";
   $("theme").value = settings.theme || "graphite";
@@ -218,6 +219,7 @@ function setupRail() {
 // ---------- 基本设置事件 ----------
 $("enabled").onchange = (e) => { settings.enabled = e.target.checked; save(); };
 $("capture").onchange = (e) => { settings.capture = e.target.checked; save(); };
+$("includeReplies").onchange = (e) => { settings.includeReplies = e.target.checked; save(true); };
 $("hideDrawer").onchange = (e) => { settings.hideDrawer = e.target.checked; save(true); };
 $("drawerSelector").onchange = (e) => { settings.drawerSelector = e.target.value; save(true); };
 $("theme").onchange = (e) => { settings.theme = e.target.value; save(true); };
@@ -388,6 +390,59 @@ $("svcTest").onclick = () => {
 };
 
 // ---------- 捕获列表 ----------
+// 复制只借剪贴板，不记录正文；失败要如实说出来，不能假装成功。
+function copyPlainText(text, done) {
+  const clip = navigator.clipboard;
+  if (!clip || typeof clip.writeText !== "function") {
+    done(new Error("当前环境没有可用的剪贴板接口"));
+    return;
+  }
+  let pending;
+  try {
+    pending = clip.writeText(text);
+  } catch (err) {
+    done(err || new Error("复制失败"));
+    return;
+  }
+  Promise.resolve(pending).then(
+    () => done(null),
+    (err) => done(err || new Error("复制失败"))
+  );
+}
+
+// 按钮上的短反馈：先显示结果，再退回原来的文案。
+function flashLabel(btn, text, ms) {
+  if (btn._flashLabel === undefined) btn._flashLabel = btn.textContent;
+  btn.textContent = text;
+  clearTimeout(btn._flashTimer);
+  btn._flashTimer = setTimeout(() => { btn.textContent = btn._flashLabel; }, ms);
+}
+
+// 每条记录的「复制此条」：闭包直接拿着这条记录，不走参数拼接。
+function captureCopyButton(record) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn-quiet cap-copy";
+  btn.textContent = "复制此条";
+  btn.onclick = () => {
+    let json;
+    try {
+      json = JSON.stringify(record, null, 2);
+    } catch (err) {
+      flashLabel(btn, "复制失败：记录无法转成 JSON", 2400);
+      return;
+    }
+    copyPlainText(json, (err) => {
+      if (err) {
+        flashLabel(btn, "复制失败，请手动选中正文", 2400);
+        return;
+      }
+      flashLabel(btn, "已复制 ✓", 1200);
+    });
+  };
+  return btn;
+}
+
 function renderCaptures() {
   chrome.storage.local.get("captures", (res) => {
     const list = res && res.captures || [];
@@ -398,6 +453,12 @@ function renderCaptures() {
     }
     box.innerHTML = "";
     list.forEach((c) => {
+      // 一条记录一个外壳：按钮在滚动区外面，正文再长也不会把按钮顶走。
+      const item = document.createElement("div");
+      item.className = "cap-item";
+      const head = document.createElement("div");
+      head.className = "cap-head";
+      head.appendChild(captureCopyButton(c));
       const div = document.createElement("div");
       div.className = "cap";
       const t = new Date(c.ts || Date.now()).toLocaleString("zh-CN");
@@ -407,7 +468,9 @@ function renderCaptures() {
         `时间: ${t} · 响应长度: ${c.respLen || 0}\n` +
         `--- 请求体 ---\n${escapeHtml((c.reqBody || "(空)").slice(0, 1500))}\n` +
         `--- 响应样本 ---\n${escapeHtml((c.respSample || "(空)").slice(0, 1500))}`;
-      box.appendChild(div);
+      item.appendChild(head);
+      item.appendChild(div);
+      box.appendChild(item);
     });
   });
 }
@@ -420,13 +483,26 @@ function escapeHtml(s) {
 }
 
 $("copy").onclick = () => {
+  const btn = $("copy");
   chrome.storage.local.get("captures", (res) => {
-    const json = JSON.stringify(res && res.captures || [], null, 2);
-    navigator.clipboard.writeText(json).then(() => {
-      const b = $("copy");
-      const old = b.textContent;
-      b.textContent = "已复制 ✓";
-      setTimeout(() => (b.textContent = old), 1200);
+    const list = res && res.captures || [];
+    if (!list.length) {
+      flashLabel(btn, "暂无捕获记录", 1600);
+      return;
+    }
+    let json;
+    try {
+      json = JSON.stringify(list, null, 2);
+    } catch (err) {
+      flashLabel(btn, "复制失败：记录无法转成 JSON", 2400);
+      return;
+    }
+    copyPlainText(json, (err) => {
+      if (err) {
+        flashLabel(btn, "复制失败，请手动选中正文", 2400);
+        return;
+      }
+      flashLabel(btn, "已复制 ✓", 1200);
     });
   });
 };

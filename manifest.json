@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "X 大白话 · Grok 解读增强",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "悬停 X 推文或文章，用大白话中文解读。支持 X 内置 Grok 或自带 Key 的第三方 API，可选解读专家，支持卡片内多轮追问。",
   "icons": {
     "16": "icons/icon16.png",
